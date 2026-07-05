@@ -1,0 +1,8 @@
+[gd_resource type="Resource" script_class="Player" load_steps=2 format=3 uid="uid://fixture0ammo"]
+
+[ext_resource type="Script" path="res://player.gd" id="1_ammo"]
+
+[resource]
+script = ExtResource("1_ammo")
+pickup_quantity = 10
+string_id = &"ammo_fixture"
