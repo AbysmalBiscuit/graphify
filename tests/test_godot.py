@@ -9,6 +9,25 @@ from graphify.extract import extract, extract_gdscript, extract_godot_scene
 
 FIXTURES = Path(__file__).parent / "fixtures" / "godot_project"
 
+try:
+    from tree_sitter_language_pack import PackConfig, cache_dir, configure
+
+    _GRAMMAR_CACHE: str | None = cache_dir()
+except ImportError:
+    _GRAMMAR_CACHE = None
+
+
+@pytest.fixture(autouse=True)
+def _real_grammar_cache():
+    """tree-sitter-language-pack resolves the GDScript grammar under the user
+    cache directory, which the repo-wide sandbox-home fixture repoints at an
+    empty tmp dir. The pack then finds no grammar, fails to fall back to a
+    download, and every GDScript extraction returns zero nodes. Pin the pack to
+    the cache directory resolved at import time, while the real environment is
+    still visible; HOME and USERPROFILE stay sandboxed."""
+    if _GRAMMAR_CACHE is not None:
+        configure(PackConfig(cache_dir=_GRAMMAR_CACHE))
+
 
 def _labels(result: dict) -> set[str]:
     return {n["label"] for n in result["nodes"]}
