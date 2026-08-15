@@ -38,10 +38,8 @@ CONFLICT_DOC="$(cd "$SCRIPT_DIR/.." && pwd)/references/sync-conflicts.md"
 # Failing at the upstream tip on Windows, unrelated to the sync. Verified against
 # a clean upstream worktree, not assumed — re-verify before extending this list.
 KNOWN_FAILURES=(
-  "tests/test_detect.py::test_gitignore_nested_negation_overrides_broader_root_rule"
-  "tests/test_detect.py::test_nested_ignore_overrides_git_info_exclude_and_root"
-  "tests/test_detect.py::test_path_pattern_single_star_does_not_cross_segment"
-  "tests/test_detect.py::test_detect_surfaces_unreadable_dir_instead_of_silent_skip"
+  "tests/test_detect.py::test_graphifyignore_matches_nfc_path_with_nfd_pattern"
+  "tests/test_detect.py::test_graphifyignore_matches_nfd_path_with_nfc_pattern"
 )
 
 REGRESSION_TESTS=(
