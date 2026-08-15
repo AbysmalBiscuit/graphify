@@ -69,6 +69,24 @@ worktree_for() {
       /^branch /{if (substr($0, 8) == want) {print wt; exit}}'
 }
 
+# Path of the worktree holding a stopped rebase of $1, empty if none does.
+# A stopped rebase detaches HEAD, so `worktree_for` reports the branch as
+# checked out nowhere; without this the feature worktree resolves to the main
+# checkout and the script starts a second rebase there, on top of the first.
+rebasing_worktree_for() {
+  local wt gitdir state
+  while read -r wt; do
+    gitdir=$(git -C "$wt" rev-parse --git-dir 2>/dev/null) || continue
+    for state in rebase-merge rebase-apply; do
+      [[ -f "$gitdir/$state/head-name" ]] || continue
+      if [[ "$(<"$gitdir/$state/head-name")" == "refs/heads/$1" ]]; then
+        printf '%s\n' "$wt"
+        return
+      fi
+    done
+  done < <(git worktree list --porcelain | awk '/^worktree /{print substr($0, 10)}')
+}
+
 report_conflict() {
   local wt=$1
   say ""
@@ -121,6 +139,7 @@ INTEGRATION="$base"
 
 FEATURE_WT=$(worktree_for "$FEATURE")
 INT_WT=$(worktree_for "$INTEGRATION")
+[[ -z "$FEATURE_WT" ]] && FEATURE_WT=$(rebasing_worktree_for "$FEATURE")
 [[ -z "$FEATURE_WT" ]] && FEATURE_WT=$MAIN_WT
 [[ -z "$INT_WT" ]] && INT_WT=$MAIN_WT
 say "$FEATURE: $FEATURE_WT"
@@ -195,7 +214,13 @@ else
   say "== rebase $FEATURE onto $UP_REF =="
   say "commits to replay:"
   git -C "$MAIN_WT" log --oneline "$UP_REF..$FEATURE" | sed 's/^/  /'
-  git -C "$FEATURE_WT" switch "$FEATURE" >/dev/null 2>&1
+  if ! switch_out=$(git -C "$FEATURE_WT" switch "$FEATURE" 2>&1); then
+    say "$switch_out"
+    say ""
+    say "cannot check out $FEATURE in $FEATURE_WT — rebasing from whatever HEAD"
+    say "is there would replay the wrong commits. Resolve the state above first."
+    finish ERROR 3
+  fi
   if ! rebase_out=$(git -C "$FEATURE_WT" rebase "$UP_REF" 2>&1); then
     say "$rebase_out"
     report_conflict "$FEATURE_WT"
