@@ -1,5 +1,18 @@
 # Resolving sync conflicts
 
+## What the resolver already did
+
+`sync-resolve.py` applies the three recipes below before you see anything, and
+`sync.sh` drives the rebase through them. If the sync still stopped, the file it
+stopped on is one the resolver refused: either no recipe covers it, or a
+conflict region inside a covered file held a line the recipe does not recognise.
+It refuses whole files, never half of one, so any file it left still carries its
+markers.
+
+That makes the recipes below two things at once: what the resolver implements,
+and what you extend when a new conflict starts recurring. A resolution you make
+by hand more than once belongs in the script.
+
 ## The rule that resolves almost everything
 
 **For any conflicted hunk, take the upstream side unless that hunk is one of the Godot branch's intentional changes.**
@@ -29,6 +42,7 @@ Everything `feat_lang_godot` deliberately adds. If a conflicted hunk is not in t
 | `tools/skillgen/gen.py` | `_is_code_exts_line` predicate + its entry in `_SANCTIONED_MONOLITH_DIFFS` |
 | skill `update.md` fragments + frozen monoliths | `.gd`/`.tscn`/`.tres` in the `code_exts` set |
 | `tests/test_godot.py`, `tests/fixtures/godot_project/` | new (never conflict) |
+| `uv.lock` | the `godot` extra block, its `provides-extras` entry, and the `tree-sitter-language-pack` package entries |
 | `CHANGELOG.md` | the Godot entry |
 
 Note what is **not** on that list: `DOC_EXTENSIONS`, the `graphifyy` version, and the end-of-`extract()` cleanup block. Conflicts there are pure staleness.
@@ -57,9 +71,20 @@ The `version` line conflicts only sometimes; when it does, take upstream's.
 
 ### `uv.lock`
 
-Only the `graphifyy` version conflicts. Set it to upstream's.
+Two lines conflict, and which of them varies by release: the `graphifyy`
+version, and `provides-extras`. Take upstream's version line verbatim. For
+`provides-extras`, take upstream's list and insert `"godot"` before `"all"`.
 
-Do **not** resolve with a wholesale side pick — that discards the `tree-sitter-language-pack` entries the Godot extra needs. Resolve the version line alone and leave the rest of the merged content.
+Do **not** resolve with a wholesale side pick — that discards the
+`tree-sitter-language-pack` entries the Godot extra needs. Resolve the
+conflicted lines alone and leave the rest of the merged content.
+
+`provides-extras` is the fork's blind spot, so resolve it deliberately.
+Nothing in the repo reads it and no test touches it, which means an
+upstream-side pick drops the `godot` extra with every static check and the
+full suite still green. `uv sync --extra godot` is the first thing that
+notices, at install time. `sync-check.py` now asserts it, along with the
+`godot = [...]` block and the `extra == 'godot'` requires-dist marker.
 
 Match upstream's lock version, never `pyproject.toml`'s. Upstream ships the two out of step — 0.9.34 bumped the project version and left the lock at 0.9.31 — so an equal-to-pyproject resolution silently diverges from upstream and conflicts again on the next sync.
 
@@ -88,15 +113,30 @@ Read every file in the intentional-changes table, not just the conflicted ones. 
 
 The specific shape to look for: the branch's code reads a key/attribute/variable that upstream has started popping, consuming, renaming, or moving earlier in the same scope.
 
+## New test failures
+
+`sync.sh` re-runs each failure that is not in `KNOWN_FAILURES` against a scratch
+worktree at the upstream ref, installed with its own environment so upstream's
+tests run against upstream's code rather than the branch's. Four verdicts:
+
+- `REGRESSION` — passes upstream, so the merge broke it. Real work.
+- `PRE-EXISTING` — fails upstream too. The output prints the `KNOWN_FAILURES`
+  line to paste in. Adding it stays manual: a test broken both upstream and by
+  the merge reads as pre-existing, and a gate whose exception list grows by
+  itself stops being a gate.
+- `BRANCH-ONLY` — the test file does not exist upstream, so it is the branch's
+  own and the merge owns the failure.
+- `INCONCLUSIVE` — pytest could not collect it there. Usually a renamed or
+  mistyped node id; classify it by hand.
+
 ## Speed
 
-Enable rerere once, so a resolution you have already made replays itself if the rebase is aborted and retried, or if the same hunk conflicts again next release:
-
-```bash
-git config rerere.enabled true
-```
-
-It records resolutions per-conflict-content, so it helps most on `detect.py` and `uv.lock`, which conflict the same way every time.
+`sync.sh` switches on `rerere` for the repo the first time it runs, so a
+resolution you have already made replays itself when the same hunk conflicts
+again. It records resolutions by conflict content, which means it helps within
+one sync (an aborted-and-retried rebase) far more than across releases: upstream
+edits these literals, so next release's conflict text is not identical and
+rerere misses. Cross-release repetition is what `sync-resolve.py` covers.
 
 ## Verify before pushing
 

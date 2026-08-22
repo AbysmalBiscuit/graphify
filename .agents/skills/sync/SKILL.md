@@ -25,6 +25,17 @@ list` to orient yourself or to double-check a result the script already reported
 
 The script is safe to re-run at any point; mid-rebase it continues where it stopped.
 
+It resolves the three recurring conflicts itself (`graphify/detect.py`,
+`pyproject.toml`, `uv.lock`) and drives the rebase through them, so a `CONFLICT`
+now means something no recipe covers. The resolver refuses a whole file rather
+than resolving part of it, and `sync-check.py` re-verifies whatever it staged
+through separate parsing. Read what it already did before re-resolving by hand.
+
+On `TESTS-FAILED` it has already re-run each new failure against a clean
+`upstream/<base>` checkout and labelled it REGRESSION, PRE-EXISTING, BRANCH-ONLY
+or INCONCLUSIVE. Trust that classification over your own guess, and act on it
+rather than repeating the experiment.
+
 ---
 
 !`bash .agents/skills/sync/scripts/sync.sh "$ARGUMENTS" 2>&1 || true`

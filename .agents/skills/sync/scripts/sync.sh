@@ -34,6 +34,7 @@ UPSTREAM=upstream
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CHECK_SCRIPT="$SCRIPT_DIR/sync-check.py"
 CONFLICT_DOC="$(cd "$SCRIPT_DIR/.." && pwd)/references/sync-conflicts.md"
+RESOLVE_SCRIPT="$SCRIPT_DIR/sync-resolve.py"
 
 # Failing at the upstream tip on Windows, unrelated to the sync. Verified against
 # a clean upstream worktree, not assumed — re-verify before extending this list.
@@ -85,6 +86,19 @@ rebasing_worktree_for() {
   done < <(git worktree list --porcelain | awk '/^worktree /{print substr($0, 10)}')
 }
 
+# The project interpreter, never `uv run`: any unfrozen uv invocation re-syncs
+# and rewrites uv.lock's version to match pyproject, which pulls the lock away
+# from the upstream copy the checker compares it against.
+project_python() {
+  local wt
+  for wt in "$@"; do
+    [[ -x "$wt/.venv/Scripts/python.exe" ]] && { printf '%s
+' "$wt/.venv/Scripts/python.exe"; return; }
+    [[ -x "$wt/.venv/bin/python" ]] && { printf '%s
+' "$wt/.venv/bin/python"; return; }
+  done
+}
+
 report_conflict() {
   local wt=$1
   say ""
@@ -105,6 +119,133 @@ report_conflict() {
   finish CONFLICT 10
 }
 
+# Apply the recipe-known resolutions. Returns non-zero when anything is left,
+# including when the resolver itself is unavailable, so the caller reports
+# rather than pushing on.
+auto_resolve() {
+  local wt=$1 out
+  if [[ -z "$PY" ]]; then
+    say "no project venv found - skipping auto-resolution (run 'uv sync' to enable it)"
+    return 1
+  fi
+  if [[ ! -f "$RESOLVE_SCRIPT" ]]; then
+    say "resolve script missing: $RESOLVE_SCRIPT - skipping auto-resolution"
+    return 1
+  fi
+  say ""
+  say "== auto-resolving the recurring conflicts =="
+  out=$("$PY" "$RESOLVE_SCRIPT" "$wt" 2>&1)
+  local rc=$?
+  say "$out"
+  return $rc
+}
+
+# Drive a stopped rebase to the end, auto-resolving what the recipes cover and
+# reporting whatever they do not. The iteration cap is a runaway guard: each
+# pass must consume one commit, so it can only spin if `rebase --continue`
+# stops making progress.
+drive_rebase() {
+  local wt=$1 cont_out rc i
+  for ((i = 0; i < 50; i++)); do
+    if [[ -n "$(git -C "$wt" diff --name-only --diff-filter=U)" ]]; then
+      auto_resolve "$wt" || report_conflict "$wt"
+    fi
+    cont_out=$(cd "$wt" && GIT_EDITOR=true git rebase --continue 2>&1)
+    rc=$?
+    say "$cont_out"
+    rebase_in_progress "$wt" || return 0
+    if [[ $rc -ne 0 && -z "$(git -C "$wt" diff --name-only --diff-filter=U)" ]]; then
+      say ""
+      say "rebase --continue failed and left no conflicts to resolve - inspect above"
+      finish ERROR 3
+    fi
+  done
+  say "rebase did not converge after 50 continues - inspect $wt by hand"
+  finish ERROR 3
+}
+
+rebase_in_progress() {
+  local gitdir
+  gitdir=$(git -C "$1" rev-parse --git-dir) || return 1
+  [[ -e "$gitdir/rebase-merge" || -e "$gitdir/rebase-apply" ]]
+}
+
+# Re-run each new failure against a clean upstream checkout and say which ones
+# fail there too. A failure that pre-exists upstream is not this sync's doing;
+# one that passes upstream is a real break the merge introduced.
+#
+# The scratch worktree gets no venv of its own. pytest runs from the project's
+# interpreter with the base-check file paths as node ids, which is why upstream
+# code under test has to be reachable by path rather than by import.
+triage_new_failures() {
+  local ids=$1 tw="$MAIN_WT/../graphify-sync-triage" pre="" reg="" unk="" nodeid rel name
+  say ""
+  say "== triage: re-running them at $UP_REF =="
+  if ! git -C "$MAIN_WT" worktree add --detach "$tw" "$UP_REF" >/dev/null 2>&1; then
+    say "could not create a scratch worktree at $tw - triage skipped"
+    say "prove each one pre-exists by hand before dismissing it:"
+    say "  git worktree add ../graphify-base-check $UP_REF"
+    say "  cd ../graphify-base-check && uv run --frozen pytest <file> -q -k '<test>'"
+    say "  git worktree remove ../graphify-base-check --force"
+    return
+  fi
+  # The scratch tree gets its own environment on purpose. Running upstream's
+  # test files under this project's venv imports the branch's code, which
+  # answers the wrong question: triage asks whether upstream fails upstream.
+  say "installing $UP_REF into $tw (first run only)"
+  if ! (cd "$tw" && uv sync --frozen >/dev/null 2>&1); then
+    say "uv sync failed in the scratch worktree - triage skipped"
+    git -C "$MAIN_WT" worktree remove "$tw" --force >/dev/null 2>&1
+    return
+  fi
+  while IFS= read -r nodeid; do
+    nodeid=$(printf '%s' "$nodeid" | tr -d '[:space:]')
+    [[ -z "$nodeid" ]] && continue
+    rel=${nodeid%%::*}
+    # -k, not a ::node-id: pytest will not split a node id off a path handed to
+    # it through the shell here. A parametrised failure triages as its whole
+    # param family, which is close enough to classify the failure.
+    name=${nodeid##*::}
+    name=${name%%[*}
+    if [[ ! -f "$tw/$rel" ]]; then
+      say "  BRANCH-ONLY   $nodeid (no such file at $UP_REF)"
+      reg+="  $nodeid"$'
+'
+      continue
+    fi
+    (cd "$tw" && uv run --frozen pytest "$rel" -q -k "$name" >/dev/null 2>&1)
+    case $? in
+      0) say "  REGRESSION    $nodeid (passes at $UP_REF)"; reg+="  $nodeid"$'
+' ;;
+      1) say "  PRE-EXISTING  $nodeid (fails at $UP_REF too)"; pre+="  \"$nodeid\""$'
+' ;;
+      *) say "  INCONCLUSIVE  $nodeid (pytest could not collect it at $UP_REF)"; unk+="  $nodeid"$'
+' ;;
+    esac
+  done <<< "$ids"
+  git -C "$MAIN_WT" worktree remove "$tw" --force >/dev/null 2>&1
+
+  if [[ -n "$reg" ]]; then
+    say ""
+    say "the merge broke these - they are the sync's fault, not upstream's:"
+    printf '%s' "$reg"
+  fi
+  if [[ -n "$unk" ]]; then
+    say ""
+    say "could not be collected at $UP_REF - classify these by hand:"
+    printf '%s' "$unk"
+  fi
+  if [[ -n "$pre" ]]; then
+    say ""
+    say "these are proven pre-existing at $UP_REF. Add them to KNOWN_FAILURES in"
+    say "$SCRIPT_DIR/sync.sh, then re-run:"
+    printf '%s' "$pre"
+  fi
+  # The list stays hand-edited on purpose: a test broken both upstream and by
+  # this merge reads as pre-existing, and a set that grows on its own is how the
+  # gate stops meaning anything.
+}
+
 git rev-parse --git-dir >/dev/null 2>&1 || {
   say "not inside a git repository: $PWD"
   finish ERROR 3
@@ -116,6 +257,15 @@ MAIN_WT=$(main_worktree)
   finish ERROR 3
 }
 say "main checkout: $MAIN_WT"
+
+# rerere replays a resolution the next time the same hunk conflicts, which is
+# what saves an aborted-and-retried rebase from being resolved twice. Repo-local
+# and idempotent; the auto-resolver covers the cross-release case rerere cannot,
+# because upstream edits these literals and the conflict text is never identical
+# twice.
+if [[ -z "$(git -C "$MAIN_WT" config --get rerere.enabled)" ]]; then
+  git -C "$MAIN_WT" config rerere.enabled true && say "enabled rerere for this repo"
+fi
 
 git -C "$MAIN_WT" remote get-url "$UPSTREAM" >/dev/null 2>&1 || {
   say "no '$UPSTREAM' remote — this script syncs a fork, not a standalone clone"
@@ -143,26 +293,16 @@ INT_WT=$(worktree_for "$INTEGRATION")
 say "$FEATURE: $FEATURE_WT"
 say "$INTEGRATION: $INT_WT"
 
+PY=$(project_python "$INT_WT" "$FEATURE_WT" "$MAIN_WT")
+
 # A stopped rebase leaves its worktree detached, so this precedes every other
 # state check. Only the feature worktree ever hosts one.
 feature_git_dir=$(git -C "$FEATURE_WT" rev-parse --git-dir)
 if [[ -e "$feature_git_dir/rebase-merge" || -e "$feature_git_dir/rebase-apply" ]]; then
-  if [[ -n "$(git -C "$FEATURE_WT" diff --name-only --diff-filter=U)" ]]; then
-    say ""
-    say "== rebase already in progress, conflicts still unresolved =="
-    git -C "$FEATURE_WT" status --short --branch
-    report_conflict "$FEATURE_WT"
-  fi
   say ""
   say "== continuing the in-progress rebase =="
-  if ! cont_out=$(cd "$FEATURE_WT" && GIT_EDITOR=true git rebase --continue 2>&1); then
-    say "$cont_out"
-    [[ -n "$(git -C "$FEATURE_WT" diff --name-only --diff-filter=U)" ]] && report_conflict "$FEATURE_WT"
-    say ""
-    say "rebase --continue failed and left no conflicts to resolve — inspect above"
-    finish ERROR 3
-  fi
-  say "$cont_out"
+  git -C "$FEATURE_WT" status --short --branch
+  drive_rebase "$FEATURE_WT"
 fi
 
 for wt in "$FEATURE_WT" "$INT_WT"; do
@@ -219,11 +359,9 @@ else
     say "is there would replay the wrong commits. Resolve the state above first."
     finish ERROR 3
   fi
-  if ! rebase_out=$(git -C "$FEATURE_WT" rebase "$UP_REF" 2>&1); then
-    say "$rebase_out"
-    report_conflict "$FEATURE_WT"
-  fi
+  rebase_out=$(git -C "$FEATURE_WT" rebase "$UP_REF" 2>&1)
   say "$rebase_out"
+  rebase_in_progress "$FEATURE_WT" && drive_rebase "$FEATURE_WT"
 fi
 
 if [[ "$(git -C "$INT_WT" rev-parse -q --verify "$INTEGRATION^1" 2>/dev/null)" == "$(git -C "$INT_WT" rev-parse "$UP_REF")" ]] &&
@@ -251,17 +389,6 @@ say "$merge_out"
 
 say ""
 say "== static checks =="
-if [[ -x "$INT_WT/.venv/Scripts/python.exe" ]]; then
-  PY="$INT_WT/.venv/Scripts/python.exe"
-elif [[ -x "$INT_WT/.venv/bin/python" ]]; then
-  PY="$INT_WT/.venv/bin/python"
-elif [[ -x "$MAIN_WT/.venv/Scripts/python.exe" ]]; then
-  PY="$MAIN_WT/.venv/Scripts/python.exe"
-elif [[ -x "$MAIN_WT/.venv/bin/python" ]]; then
-  PY="$MAIN_WT/.venv/bin/python"
-else
-  PY=""
-fi
 if [[ -z "$PY" ]]; then
   say "no project venv found — skipping static checks (run 'uv sync' to enable them)"
 elif [[ ! -f "$CHECK_SCRIPT" ]]; then
@@ -317,11 +444,7 @@ if [[ -n "$new_failures" ]]; then
   say ""
   say "NEW failures, not in the known pre-existing set:"
   printf '%s' "$new_failures"
-  say ""
-  say "prove each one pre-exists before dismissing it:"
-  say "  git worktree add ../graphify-base-check $UP_REF"
-  say "  uv run --frozen --project . pytest ../graphify-base-check/<file> -q -k '<test>'"
-  say "  git worktree remove ../graphify-base-check --force"
+  triage_new_failures "$new_failures"
   finish TESTS-FAILED 12
 fi
 
