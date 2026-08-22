@@ -846,6 +846,7 @@ _SKIP_DIRS = {
     ".graphify",  # graphify's own extraction cache — never index self-generated data
     ".obsidian", ".smart-env",  # Obsidian vault metadata and plugin caches (#2493)
     ".worktrees",  # git worktree convention (#947) — sibling checkouts, always redundant
+    ".godot",  # Godot 4's engine cache directory, distinct from the project.godot file
 }
 
 # Large generated files that are never useful to extract

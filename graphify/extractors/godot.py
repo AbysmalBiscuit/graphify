@@ -99,6 +99,46 @@ def _class_name_map(path: Path) -> dict[str, Path]:
     return mapping
 
 
+_uid_maps: dict[Path, dict[str, Path]] = {}
+
+
+def _uid_map(path: Path) -> dict[str, Path]:
+    """Project-wide `uid://...` -> target-path map, memoized per project root
+    like `_class_name_map`. Godot 4.4 writes a `<file>.uid` sidecar next to
+    each script and resource whose sole content is that file's uid string."""
+    root = _godot_project_root(path) or path.parent
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
+    cached = _uid_maps.get(root)
+    if cached is not None:
+        return cached
+
+    mapping: dict[str, Path] = {}
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _: None):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for name in filenames:
+            if not name.endswith(".uid"):
+                continue
+            uid_path = Path(dirpath) / name
+            try:
+                uid = uid_path.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+            if not uid.startswith("uid://"):
+                continue
+            target = uid_path.with_suffix("")
+            try:
+                if target.is_file():
+                    mapping[uid] = target
+            except OSError:
+                continue
+
+    _uid_maps[root] = mapping
+    return mapping
+
+
 def _resolve_res_path(res_path: str, path: Path) -> Path | None:
     """Resolve a Godot resource reference to an existing file.
 
@@ -109,8 +149,8 @@ def _resolve_res_path(res_path: str, path: Path) -> Path | None:
     file's directory. A reference is dropped when the file doesn't exist (a
     phantom node would carry a path found nowhere in the corpus) or when it
     escapes the project — a corpus file can never mint a node outside the
-    scanned tree. ``uid://`` / ``user://`` references are not resolvable from
-    text and return None.
+    scanned tree. ``uid://`` references resolve via `_uid_map`; ``user://``
+    references have no on-disk location and return None.
     """
     if res_path.startswith("res://"):
         rel = res_path[len("res://"):]
@@ -131,6 +171,18 @@ def _resolve_res_path(res_path: str, path: Path) -> Path | None:
             except OSError:
                 continue
         return None
+    if res_path.startswith("uid://"):
+        root = _godot_project_root(path)
+        if root is None:
+            return None
+        target = _uid_map(path).get(res_path)
+        if target is None:
+            return None
+        try:
+            target.resolve().relative_to(root.resolve())
+        except (OSError, ValueError):
+            return None
+        return target
     if "://" in res_path:
         return None
     # Relative to the referencing file's directory.
@@ -256,6 +308,7 @@ def extract_gdscript(path: Path) -> dict:
         return nid, norm_target
 
     class_name_map = _class_name_map(path)
+    autoload_map = _autoload_map(path)
 
     def _type_identifiers(node):
         if node.type == "identifier":
@@ -465,6 +518,16 @@ def extract_gdscript(path: Path) -> dict:
                         connect_handler_args(args, func_nid, line)
                 elif method == "connect" and args is not None:
                     connect_handler_args(args, func_nid, line)
+                elif receiver_name in autoload_map and method:
+                    # `EventBus.emit_signal(...)` / `GameData.load()` — the receiver
+                    # is a project-wide singleton, not an in-file symbol. The method
+                    # edge targets a computed id with no stub node, so it lands only
+                    # if that method exists; the singleton reference always lands.
+                    autoload_target = autoload_map[receiver_name]
+                    add_edge(func_nid, _make_id(_file_stem(autoload_target), method),
+                             "calls", line, context="autoload")
+                    add_edge(func_nid, _make_id("autoload", receiver_name),
+                             "references", line, context="autoload")
                 elif method and method not in _GDSCRIPT_BUILTINS:
                     method_nid = _make_id(stem, method)
                     if method_nid in seen_ids:
@@ -816,3 +879,153 @@ def extract_godot_scene(path: Path) -> dict:
             node["properties"] = state["text"]
 
     return {"nodes": nodes, "edges": edges, "raw_calls": raw_calls}
+
+
+# ── project.godot (autoloads, main scene) ─────────────────────────────────────
+
+def _iter_autoload_entries(src: str, path: Path):
+    """Yield (name, line, resolved_target) for each entry in project.godot's
+    `[autoload]` section. `resolved_target` is None when the `*res://`/
+    `*uid://` reference can't be resolved to an on-disk file. The leading `*`
+    (marks the singleton as enabled) is stripped before resolution."""
+    section: str | None = None
+    for lineno, line in enumerate(src.splitlines(), 1):
+        if line.startswith("["):
+            m = _GODOT_SECTION_RE.match(line)
+            section = m.group(1) if m else None
+            continue
+        if section != "autoload":
+            continue
+        prop = _GODOT_PROPERTY_RE.match(line)
+        if not prop:
+            continue
+        quoted = _GODOT_QUOTED_RE.match(prop.group(2).strip())
+        if not quoted:
+            continue
+        raw = quoted.group(1)
+        if raw.startswith("*"):
+            raw = raw[1:]
+        yield prop.group(1), lineno, _resolve_res_path(raw, path)
+
+
+_autoload_maps: dict[Path, dict[str, Path]] = {}
+
+
+def _autoload_map(path: Path) -> dict[str, Path]:
+    """Project-wide autoload singleton name -> script path map, memoized per
+    project root like `_class_name_map`."""
+    root = _godot_project_root(path)
+    if root is None:
+        return {}
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
+    cached = _autoload_maps.get(root)
+    if cached is not None:
+        return cached
+
+    project_file = root / "project.godot"
+    try:
+        src = project_file.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        src = ""
+
+    mapping = {
+        name: target
+        for name, _lineno, target in _iter_autoload_entries(src, project_file)
+        if target is not None
+    }
+    _autoload_maps[root] = mapping
+    return mapping
+
+
+def extract_godot_project(path: Path) -> dict:
+    """Extract autoload singletons and the main scene from project.godot."""
+    try:
+        src = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {"nodes": [], "edges": [], "error": f"cannot read {path}"}
+
+    str_path = str(path)
+    nodes: list[dict] = []
+    edges: list[dict] = []
+    seen_ids: set[str] = set()
+
+    def add_node(nid: str, label: str, line: int, *, file_type: str = "code") -> None:
+        if nid in seen_ids:
+            return
+        seen_ids.add(nid)
+        nodes.append({
+            "id": nid,
+            "label": label,
+            "file_type": file_type,
+            "source_file": str_path,
+            "source_location": f"L{line}",
+        })
+
+    def add_edge(src_nid: str, tgt_nid: str, relation: str, line: int,
+                 context: str | None = None, target_file: str | None = None) -> None:
+        edge = {
+            "source": src_nid,
+            "target": tgt_nid,
+            "relation": relation,
+            "confidence": "EXTRACTED",
+            "source_file": str_path,
+            "source_location": f"L{line}",
+            "weight": 1.0,
+        }
+        if context:
+            edge["context"] = context
+        if target_file:
+            edge["target_file"] = target_file
+        edges.append(edge)
+
+    def add_file_ref_node(target: Path, line: int) -> tuple[str, str]:
+        norm_target = os.path.normpath(str(target))
+        nid = _make_id(norm_target)
+        if nid not in seen_ids:
+            seen_ids.add(nid)
+            nodes.append({
+                "id": nid,
+                "label": target.name,
+                "file_type": "code",
+                "source_file": norm_target,
+                "source_location": f"L{line}",
+            })
+        return nid, norm_target
+
+    file_nid = _make_id(str(path))
+    add_node(file_nid, path.name, 1)
+
+    for name, lineno, target in _iter_autoload_entries(src, path):
+        singleton_nid = _make_id("autoload", name)
+        add_node(singleton_nid, name, lineno, file_type="concept")
+        if target is not None:
+            target_nid, abs_target = add_file_ref_node(target, lineno)
+            add_edge(file_nid, target_nid, "references", lineno,
+                     context="autoload", target_file=abs_target)
+            add_edge(singleton_nid, target_nid, "references", lineno,
+                     context="autoload_script", target_file=abs_target)
+
+    section: str | None = None
+    for lineno, line in enumerate(src.splitlines(), 1):
+        if line.startswith("["):
+            m = _GODOT_SECTION_RE.match(line)
+            section = m.group(1) if m else None
+            continue
+        if section != "application":
+            continue
+        prop = _GODOT_PROPERTY_RE.match(line)
+        if not prop or prop.group(1) != "run/main_scene":
+            continue
+        quoted = _GODOT_QUOTED_RE.match(prop.group(2).strip())
+        if not quoted:
+            continue
+        target = _resolve_res_path(quoted.group(1), path)
+        if target is not None:
+            target_nid, abs_target = add_file_ref_node(target, lineno)
+            add_edge(file_nid, target_nid, "references", lineno,
+                     context="main_scene", target_file=abs_target)
+
+    return {"nodes": nodes, "edges": edges, "raw_calls": []}

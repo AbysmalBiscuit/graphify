@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from graphify.extract import extract, extract_gdscript, extract_godot_scene
+from graphify.extract import extract, extract_gdscript, extract_godot_project, extract_godot_scene
 from graphify.extractors.base import _file_stem, _make_id
-from graphify.extractors.godot import _GODOT_PROPERTIES_CAP, _class_name_map
+from graphify.extractors.godot import _GODOT_PROPERTIES_CAP, _class_name_map, _resolve_res_path
 
 FIXTURES = Path(__file__).parent / "fixtures" / "godot_project"
 
@@ -238,6 +238,70 @@ def test_class_name_map_cached_across_sibling_files():
     second = _class_name_map(FIXTURES / "enemy.gd")
     assert first is second
     assert first["Weapon"].resolve() == (FIXTURES / "weapon.gd").resolve()
+
+
+# ── project.godot / uid resolution / autoloads ────────────────────────────────
+
+def test_resolve_res_path_uid_resolves_and_rejects_unknown():
+    resolved = _resolve_res_path("uid://kb8cc1vpp45t", FIXTURES / "player.gd")
+    assert resolved is not None
+    assert resolved.resolve() == (FIXTURES / "game_data.gd").resolve()
+    assert _resolve_res_path("uid://does-not-exist", FIXTURES / "player.gd") is None
+
+
+def test_gd_preload_uid_produces_imports_edge():
+    r = extract_gdscript(FIXTURES / "event_bus.gd")
+    file_id = _node_by_label(r, "event_bus.gd")["id"]
+    game_data_id = _node_by_label(r, "game_data.gd")["id"]
+    assert (file_id, game_data_id) in _edge_pairs(r, "imports")
+
+
+def test_gd_autoload_call_resolves_to_singleton_script():
+    r = extract_gdscript(FIXTURES / "event_bus.gd")
+    notify_id = _node_by_label(r, "notify()")["id"]
+    load_id = _make_id(_file_stem((FIXTURES / "game_data.gd").resolve()), "load")
+    calls = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "calls" and e.get("context") == "autoload"
+    }
+    assert (notify_id, load_id) in calls
+    refs = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "autoload"
+    }
+    assert (notify_id, _make_id("autoload", "GameData")) in refs
+
+
+def test_godot_project_autoload_and_main_scene_edges():
+    r = extract_godot_project(FIXTURES / "project.godot")
+    file_id = _node_by_label(r, "project.godot")["id"]
+    event_bus_singleton = _make_id("autoload", "EventBus")
+    game_data_singleton = _make_id("autoload", "GameData")
+    event_bus_script = _node_by_label(r, "event_bus.gd")["id"]
+    game_data_script = _node_by_label(r, "game_data.gd")["id"]
+    player_scene = _node_by_label(r, "player.tscn")["id"]
+
+    autoload_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "autoload"
+    }
+    autoload_script_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "autoload_script"
+    }
+    main_scene_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "main_scene"
+    }
+
+    assert (file_id, event_bus_script) in autoload_edges
+    assert (file_id, game_data_script) in autoload_edges
+    assert (event_bus_singleton, event_bus_script) in autoload_script_edges
+    assert (game_data_singleton, game_data_script) in autoload_script_edges
+    assert (file_id, player_scene) in main_scene_edges
+
+    singleton_labels = {n["label"] for n in r["nodes"] if n["file_type"] == "concept"}
+    assert {"EventBus", "GameData"} <= singleton_labels
 
 
 # ── Scenes (.tscn) ────────────────────────────────────────────────────────────
