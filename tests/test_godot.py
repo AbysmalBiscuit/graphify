@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from graphify.extract import extract, extract_gdscript, extract_godot_scene
+from graphify.extractors.base import _file_stem, _make_id
 
 FIXTURES = Path(__file__).parent / "fixtures" / "godot_project"
 
@@ -224,9 +225,71 @@ def test_tscn_child_of_instanced_subtree_anchors_at_root():
     assert (root_id, label_id) in _edge_pairs(r, "contains")
 
 
-def test_tscn_sub_resource_properties_are_ignored():
+def test_tscn_sub_resource_becomes_a_node():
+    path = FIXTURES / "player.tscn"
+    r = extract_godot_scene(path)
+    file_id = _node_by_label(r, "player.tscn")["id"]
+    shape = _node_by_label(r, "RectangleShape2D_1")
+    assert shape["id"] == _make_id(_file_stem(path), "sub", "RectangleShape2D_1")
+    assert (file_id, shape["id"]) in _edge_pairs(r, "contains")
+
+
+def test_tscn_sub_resource_type_becomes_concept_edge():
     r = extract_godot_scene(FIXTURES / "player.tscn")
-    assert "RectangleShape2D_1" not in _labels(r)
+    shape_id = _node_by_label(r, "RectangleShape2D_1")["id"]
+    concept = _node_by_label(r, "RectangleShape2D")
+    assert concept["file_type"] == "concept"
+    type_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "type"
+    }
+    assert (shape_id, concept["id"]) in type_edges
+
+
+def test_tscn_sub_resource_script_references_script():
+    r = extract_godot_scene(FIXTURES / "player.tscn")
+    shape_id = _node_by_label(r, "RectangleShape2D_1")["id"]
+    script_id = _node_by_label(r, "player.gd")["id"]
+    script_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "script"
+    }
+    assert (shape_id, script_id) in script_edges
+
+
+def test_tscn_node_property_embeds_sub_resource():
+    r = extract_godot_scene(FIXTURES / "player.tscn")
+    collision_id = _node_by_label(r, "CollisionShape2D")["id"]
+    shape_id = _node_by_label(r, "RectangleShape2D_1")["id"]
+    embeds = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "embeds" and e.get("context") == "sub_resource"
+    }
+    assert (collision_id, shape_id) in embeds
+
+
+def test_tscn_sub_resource_reference_resolves_forward():
+    # RectangleShape2D_1's property names CircleShape2D_1 before its
+    # [sub_resource] header appears later in the file.
+    r = extract_godot_scene(FIXTURES / "player.tscn")
+    rect_id = _node_by_label(r, "RectangleShape2D_1")["id"]
+    circle_id = _node_by_label(r, "CircleShape2D_1")["id"]
+    embeds = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "embeds" and e.get("context") == "sub_resource"
+    }
+    assert (rect_id, circle_id) in embeds
+
+
+def test_tscn_sub_resource_with_no_header_produces_no_edge():
+    r = extract_godot_scene(FIXTURES / "player.tscn")
+    assert "Missing_1" not in _labels(r)
+    embeds = [
+        e for e in r["edges"]
+        if e["relation"] == "embeds" and e.get("context") == "sub_resource"
+    ]
+    sprite_id = _node_by_label(r, "Sprite2D")["id"]
+    assert not [e for e in embeds if e["source"] == sprite_id]
 
 
 # ── Resources (.tres) ─────────────────────────────────────────────────────────
