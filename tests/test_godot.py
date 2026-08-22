@@ -595,8 +595,17 @@ def test_tscn_sub_resource_with_no_header_produces_no_edge():
     assert not [e for e in embeds if e["source"] == sprite_id]
 
 
-def test_tscn_nodepath_property_resolves_to_scene_node():
-    r = extract_godot_scene(FIXTURES / "player.tscn")
+def test_tscn_nodepath_property_resolves_to_scene_node(tmp_path):
+    fixture = tmp_path / "scene.tscn"
+    fixture.write_text(
+        '[gd_scene format=3]\n\n'
+        '[node name="Player" type="CharacterBody2D"]\n\n'
+        '[node name="Sprite2D" type="Sprite2D" parent="."]\n\n'
+        '[node name="CollisionShape2D" type="CollisionShape2D" parent="."]\n'
+        'target_path = NodePath("../Sprite2D")\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
     collision_id = _node_by_label(r, "CollisionShape2D")["id"]
     sprite_id = _node_by_label(r, "Sprite2D")["id"]
     ref_edges = {
@@ -620,7 +629,7 @@ def test_tscn_nodepath_with_subproperty_resolves_to_node(tmp_path):
         '[node name="Player" type="Node"]\n\n'
         '[node name="RunManager" type="Node" parent="."]\n\n'
         '[node name="Watcher" type="Node" parent="."]\n'
-        'target = NodePath("RunManager:planet_id")\n'
+        'target = NodePath("../RunManager:planet_id")\n'
         'sibling = NodePath("../Sibling")\n',
         encoding="utf-8",
     )
@@ -641,7 +650,7 @@ def test_tscn_nodepath_resolves_to_node_declared_later(tmp_path):
         '[gd_scene format=3]\n\n'
         '[node name="Player" type="Node"]\n\n'
         '[node name="Watcher" type="Node" parent="."]\n'
-        'target = NodePath("Target")\n'
+        'target = NodePath("../Target")\n'
         'sibling = NodePath("../Sibling")\n\n'
         '[node name="Target" type="Node" parent="."]\n',
         encoding="utf-8",
@@ -663,7 +672,7 @@ def test_tscn_nodepath_with_subproperty_resolves_to_later_node(tmp_path):
         '[gd_scene format=3]\n\n'
         '[node name="Player" type="Node"]\n\n'
         '[node name="Watcher" type="Node" parent="."]\n'
-        'target = NodePath("Target:some_property")\n\n'
+        'target = NodePath("../Target:some_property")\n\n'
         '[node name="Target" type="Node" parent="."]\n',
         encoding="utf-8",
     )
@@ -675,6 +684,110 @@ def test_tscn_nodepath_with_subproperty_resolves_to_later_node(tmp_path):
         if e["relation"] == "references"
     }
     assert (watcher_id, target_id, "target") in ref_edges
+
+
+def _nodepath_refs(result: dict) -> set[tuple[str, str, str | None]]:
+    return {
+        (e["source"], e["target"], e.get("context")) for e in result["edges"]
+        if e["relation"] == "references"
+    }
+
+
+def test_tscn_nodepath_parent_hop_resolves_to_sibling(tmp_path):
+    fixture = tmp_path / "sibling.tscn"
+    fixture.write_text(
+        '[gd_scene format=3]\n\n'
+        '[node name="Main" type="Node"]\n\n'
+        '[node name="Sphere" type="Node" parent="."]\n'
+        'target = NodePath("../Cube")\n\n'
+        '[node name="Cube" type="Node" parent="."]\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
+    sphere_id = _node_by_label(r, "Sphere")["id"]
+    cube_id = _node_by_label(r, "Cube")["id"]
+    assert (sphere_id, cube_id, "target") in _nodepath_refs(r)
+
+
+def test_tscn_nodepath_walks_up_two_levels(tmp_path):
+    fixture = tmp_path / "deep.tscn"
+    fixture.write_text(
+        '[gd_scene format=3]\n\n'
+        '[node name="Main" type="Node"]\n\n'
+        '[node name="A" type="Node" parent="."]\n\n'
+        '[node name="B" type="Node" parent="A"]\n\n'
+        '[node name="C" type="Node" parent="A/B"]\n'
+        'target = NodePath("../../D")\n\n'
+        '[node name="D" type="Node" parent="A"]\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
+    c_id = _node_by_label(r, "C")["id"]
+    d_id = _node_by_label(r, "D")["id"]
+    assert (c_id, d_id, "target") in _nodepath_refs(r)
+
+
+def test_tscn_nodepath_plain_name_is_owner_relative(tmp_path):
+    fixture = tmp_path / "shadow.tscn"
+    fixture.write_text(
+        '[gd_scene format=3]\n\n'
+        '[node name="Main" type="Node"]\n\n'
+        '[node name="Child" type="Node" parent="."]\n\n'
+        '[node name="Holder" type="Node" parent="."]\n'
+        'target = NodePath("Child")\n\n'
+        '[node name="Child" type="Node" parent="Holder"]\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
+    stem = _file_stem(fixture)
+    holder_id = _make_id(stem, "Holder")
+    own_child_id = _make_id(stem, "Holder/Child")
+    root_child_id = _make_id(stem, "Child")
+    refs = _nodepath_refs(r)
+    assert (holder_id, own_child_id, "target") in refs
+    assert (holder_id, root_child_id, "target") not in refs
+
+
+def test_tscn_nodepath_self_reference_emits_no_edge(tmp_path):
+    fixture = tmp_path / "selfref.tscn"
+    fixture.write_text(
+        '[gd_scene format=3]\n\n'
+        '[node name="Main" type="Node"]\n\n'
+        '[node name="Sphere" type="Node" parent="."]\n'
+        'target = NodePath(".")\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
+    assert not [e for e in _nodepath_refs(r) if e[2] == "target"]
+
+
+def test_tscn_nodepath_above_scene_root_emits_no_edge(tmp_path):
+    fixture = tmp_path / "toofar.tscn"
+    fixture.write_text(
+        '[gd_scene format=3]\n\n'
+        '[node name="Main" type="Node"]\n\n'
+        '[node name="Sphere" type="Node" parent="."]\n'
+        'target = NodePath("../../../TooFar")\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
+    assert not [e for e in _nodepath_refs(r) if e[2] == "target"]
+
+
+def test_tscn_sub_resource_nodepath_resolves_from_root(tmp_path):
+    fixture = tmp_path / "anim.tscn"
+    fixture.write_text(
+        '[gd_scene format=3]\n\n'
+        '[sub_resource type="Animation" id="Animation_1"]\n'
+        'tracks/0/path = NodePath("RunManager:planet_id")\n\n'
+        '[node name="Main" type="Node"]\n\n'
+        '[node name="RunManager" type="Node" parent="."]\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
+    sub_id = _node_by_label(r, "Animation_1")["id"]
+    run_manager_id = _node_by_label(r, "RunManager")["id"]
+    assert (sub_id, run_manager_id, "tracks/0/path") in _nodepath_refs(r)
 
 
 def test_tscn_truncated_opener_value_produces_no_properties_entry(tmp_path):
