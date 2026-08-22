@@ -36,12 +36,12 @@ CHECK_SCRIPT="$SCRIPT_DIR/sync-check.py"
 CONFLICT_DOC="$(cd "$SCRIPT_DIR/.." && pwd)/references/sync-conflicts.md"
 RESOLVE_SCRIPT="$SCRIPT_DIR/sync-resolve.py"
 
-# Failing at the upstream tip on Windows, unrelated to the sync. Verified against
-# a clean upstream worktree, not assumed — re-verify before extending this list.
-KNOWN_FAILURES=(
-  "tests/test_detect.py::test_graphifyignore_matches_nfc_path_with_nfd_pattern"
-  "tests/test_detect.py::test_graphifyignore_matches_nfd_path_with_nfc_pattern"
-)
+# Tests that fail at the upstream tip on Windows for reasons unrelated to the
+# sync, subtracted from the gate so only new breakage stops it. Empty because
+# nothing currently qualifies. An entry that has stopped failing upstream is
+# worse than no entry: it hides a real regression in that exact test, so trim
+# the list as readily as you extend it, and only ever from a triage verdict.
+KNOWN_FAILURES=()
 
 REGRESSION_TESTS=(
   tests/test_extract.py
