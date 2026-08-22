@@ -17,7 +17,7 @@ texture = SubResource("Missing_1")
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
 shape = SubResource("RectangleShape2D_1")
-target_path = NodePath("Sprite2D")
+target_path = NodePath("../Sprite2D")
 
 [node name="Hud" parent="." instance=ExtResource("2_hud")]
 
