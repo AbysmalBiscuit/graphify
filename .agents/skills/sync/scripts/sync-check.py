@@ -33,7 +33,7 @@ skipped: list[str] = []
 
 
 def record(ok: bool, name: str, detail: str = "") -> bool:
-    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f" — {detail}" if detail and not ok else ""))
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}" + (f" - {detail}" if detail and not ok else ""))
     if not ok:
         failures.append(name)
     return ok
@@ -204,6 +204,46 @@ def check_godot_extra(root: Path, upstream: str) -> None:
     record(not lost, "the all extra keeps upstream's pins", f"reverted to stale {sorted(lost)}")
 
 
+def lock_extras(lock: str) -> set[str] | None:
+    match = re.search(r"^provides-extras = \[(.*?)\]$", lock, re.MULTILINE | re.DOTALL)
+    return set(re.findall(r'"([^"]+)"', match.group(1))) if match else None
+
+
+GODOT_LOCK_EXTRA = 'godot = [\n    { name = "tree-sitter-language-pack" },\n]'
+GODOT_LOCK_MARKER = '{ name = "tree-sitter-language-pack", marker = "extra == \'godot\'" }'
+
+
+def check_lock_godot_extra(root: Path, upstream: str) -> None:
+    """uv.lock's own extras metadata is the fork's blind spot.
+
+    Nothing in the repo reads provides-extras and no test touches it, so
+    resolving uv.lock by taking the upstream side wholesale drops the godot
+    extra with every static check and the whole suite still green. The first
+    thing that notices is `uv sync --extra godot`, at install time.
+    """
+    lock = read(root, "uv.lock")
+
+    extras = lock_extras(lock)
+    if extras is None:
+        record(False, "uv.lock provides-extras parses", "no `provides-extras = [...]` line found")
+    else:
+        record("godot" in extras, "uv.lock advertises the godot extra", "provides-extras dropped it")
+
+    record(GODOT_LOCK_EXTRA in lock, "uv.lock keeps the godot extra's package list")
+    record(GODOT_LOCK_MARKER in lock, "uv.lock keeps the godot requires-dist marker")
+
+    ref = git(root, "show", f"{upstream}:uv.lock")
+    if ref is None or extras is None:
+        skip("uv.lock provides-extras keeps upstream's", f"{upstream} not available")
+        return
+    up = lock_extras(ref)
+    if up is None:
+        skip("uv.lock provides-extras keeps upstream's", "could not parse upstream's list")
+        return
+    lost = up - extras
+    record(not lost, "uv.lock provides-extras keeps upstream's", f"dropped {sorted(lost)}")
+
+
 def check_skillgen(root: Path) -> None:
     gen = read(root, "tools/skillgen/gen.py")
     record("def _is_code_exts_line(" in gen, "skillgen keeps the code_exts predicate")
@@ -241,6 +281,7 @@ def main() -> int:
         ("target_file routing", lambda: check_target_file_routing(root)),
         ("version", lambda: check_version(root, args.upstream)),
         ("godot extra", lambda: check_godot_extra(root, args.upstream)),
+        ("uv.lock godot extra", lambda: check_lock_godot_extra(root, args.upstream)),
         ("skillgen", lambda: check_skillgen(root)),
     ):
         print(section)
