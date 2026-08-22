@@ -444,6 +444,20 @@ def test_extract_pipeline_autoload_call_survives_stem_collision(tmp_path):
         assert str(by_id[e["target"]]["source_file"]).endswith("game_data.gd")
 
 
+def test_unresolvable_autoload_mints_no_orphan_node(tmp_path):
+    (tmp_path / "project.godot").write_text(
+        '; Engine configuration file.\nconfig_version=5\n\n[autoload]\n\n'
+        'Missing="*res://deleted.gd"\n'
+        'Working="*res://working.gd"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "working.gd").write_text("extends Node\n", encoding="utf-8")
+
+    r = extract_godot_project(tmp_path / "project.godot")
+    assert "Missing" not in _labels(r)
+    assert "Working" in _labels(r)
+
+
 # ── Scenes (.tscn) ────────────────────────────────────────────────────────────
 
 def test_tscn_node_tree_containment():
@@ -597,6 +611,62 @@ def test_tscn_noise_property_key_excluded_from_properties():
     root = _node_by_label(r, "Player")
     # "visible" is the root node's only non-script property, and it's noise.
     assert "properties" not in root
+
+
+def test_tscn_nodepath_with_subproperty_resolves_to_node(tmp_path):
+    fixture = tmp_path / "sub.tscn"
+    fixture.write_text(
+        '[gd_scene format=3]\n\n'
+        '[node name="Player" type="Node"]\n\n'
+        '[node name="RunManager" type="Node" parent="."]\n\n'
+        '[node name="Watcher" type="Node" parent="."]\n'
+        'target = NodePath("RunManager:planet_id")\n'
+        'sibling = NodePath("../Sibling")\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
+    watcher_id = _node_by_label(r, "Watcher")["id"]
+    run_manager_id = _node_by_label(r, "RunManager")["id"]
+    ref_edges = {
+        (e["source"], e["target"], e.get("context")) for e in r["edges"]
+        if e["relation"] == "references"
+    }
+    assert (watcher_id, run_manager_id, "target") in ref_edges
+    assert not [e for e in ref_edges if e[2] == "sibling"]
+
+
+def test_tscn_truncated_opener_value_produces_no_properties_entry(tmp_path):
+    fixture = tmp_path / "truncated.tscn"
+    fixture.write_text(
+        '[gd_resource type="Resource" format=3]\n\n'
+        '[resource]\n'
+        'data = {\n'
+        '"foo": 1\n'
+        '}\n'
+        'real_key = "hello"\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
+    props = _node_by_label(r, "truncated.tscn")["properties"]
+    assert "data=" not in props
+    assert "real_key=hello" in props
+
+
+def test_tscn_control_layout_keys_excluded_from_properties(tmp_path):
+    fixture = tmp_path / "control.tscn"
+    fixture.write_text(
+        '[gd_scene format=3]\n\n'
+        '[node name="Panel" type="Panel"]\n'
+        'layout_mode = 2\n'
+        'size_flags_horizontal = 3\n'
+        'text = "Hello"\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
+    panel = _node_by_label(r, "Panel")
+    assert "layout_mode=" not in panel["properties"]
+    assert "size_flags_horizontal=" not in panel["properties"]
+    assert "text=Hello" in panel["properties"]
 
 
 # ── Resources (.tres) ─────────────────────────────────────────────────────────

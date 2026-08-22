@@ -622,6 +622,9 @@ _GODOT_NOISE_PROPERTY_KEYS: frozenset[str] = frozenset({
     "offset_left", "offset_top", "offset_right", "offset_bottom",
     "anchor_left", "anchor_top", "anchor_right", "anchor_bottom",
     "global_position", "visible", "z_index", "modulate", "self_modulate",
+    "layout_mode", "unique_name_in_owner", "size_flags_horizontal",
+    "size_flags_vertical", "anchors_preset", "grow_horizontal",
+    "grow_vertical", "custom_minimum_size",
 })
 _GODOT_PROPERTIES_CAP = 500
 
@@ -722,6 +725,8 @@ def extract_godot_scene(path: Path) -> dict:
         cleaned = value[1:] if value.startswith("&") else value
         if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] == '"':
             cleaned = cleaned[1:-1]
+        if cleaned in ("{", "[", "[{", "({"):
+            return
         if len(cleaned) > 120:
             return
         state = section_properties.setdefault(nid, {"text": "", "capped": False})
@@ -887,7 +892,8 @@ def extract_godot_scene(path: Path) -> dict:
                                 add_edge(section_nid, target_nid, "references", lineno,
                                          context=key, target_file=abs_target)
                         elif nodepath_ref:
-                            target_nid = node_path_to_nid.get(nodepath_ref.group(1))
+                            node_path = nodepath_ref.group(1).split(":")[0]
+                            target_nid = node_path_to_nid.get(node_path)
                             if target_nid is not None:
                                 add_edge(section_nid, target_nid, "references", lineno,
                                          context=key)
@@ -1031,9 +1037,9 @@ def extract_godot_project(path: Path) -> dict:
     add_node(file_nid, path.name, 1)
 
     for name, lineno, target in _iter_autoload_entries(src, path):
-        singleton_nid = _make_id("autoload", name)
-        add_node(singleton_nid, name, lineno, file_type="concept")
         if target is not None:
+            singleton_nid = _make_id("autoload", name)
+            add_node(singleton_nid, name, lineno, file_type="concept")
             target_nid, abs_target = add_file_ref_node(target, lineno)
             add_edge(file_nid, target_nid, "references", lineno,
                      context="autoload", target_file=abs_target)
