@@ -639,9 +639,10 @@ def _godot_section_attrs(raw: str) -> dict[str, str]:
 def _resolve_node_path(ref: str, owner_path: str) -> str | None:
     """Resolve a NodePath value written on the node at `owner_path` into a
     root-anchored scene path ("." is the root, its children are "Name", deeper
-    nodes "Parent/Name"). Returns None for a SceneTree-absolute path, which
-    names a node outside this scene, and for a path that walks above the root."""
-    if ref.startswith("/"):
+    nodes "Parent/Name"). Returns None for an unset value, for a SceneTree-absolute
+    path, which names a node outside this scene, and for a path that walks above
+    the root."""
+    if not ref or ref.startswith("/"):
         return None
     parts = [] if owner_path == "." else owner_path.split("/")
     for segment in ref.split("/"):
@@ -768,7 +769,9 @@ def extract_godot_scene(path: Path) -> dict:
     section: str | None = None
     section_nid: str | None = None
     # NodePath values are relative to the node holding them; a section without
-    # an owning node (a sub-resource, a [resource]) is read from the root.
+    # an owning node (a sub-resource, a [resource]) is read from the root. That
+    # is an approximation for an Animation sub-resource, whose track paths are
+    # relative to its AnimationPlayer's root_node rather than to the scene root.
     section_owner_path = "."
 
     for lineno, line in enumerate(src.splitlines(), 1):
