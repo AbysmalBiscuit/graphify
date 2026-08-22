@@ -467,6 +467,31 @@ def extract_gdscript(path: Path) -> dict:
                 if handler_nid in seen_ids:
                     add_edge(func_nid, handler_nid, "calls", line, context="signal")
 
+    def emit_method_call(method: str, func_nid: str, line: int) -> None:
+        method_nid = _make_id(stem, method)
+        if method_nid in seen_ids:
+            add_edge(func_nid, method_nid, "calls", line, context="call")
+        else:
+            raw_calls.append({
+                "caller_nid": func_nid,
+                "callee": method,
+                "is_member_call": True,
+                "source_file": str_path,
+                "source_location": f"L{line}",
+            })
+
+    def known_class_receiver(receiver_name: str | None) -> bool:
+        """A bare-identifier receiver naming a class, either defined in this
+        file or elsewhere via `class_name` — the same two cases `resolve_type`
+        resolves a type name against. Excludes engine builtins/value types so
+        `Vector3.ZERO` never qualifies (Global Constraint 4)."""
+        if (receiver_name is None
+                or receiver_name in _GDSCRIPT_BUILTINS
+                or receiver_name in _GDSCRIPT_VALUE_TYPES):
+            return False
+        return (_make_id(stem, receiver_name) in seen_ids
+                or receiver_name in class_name_map)
+
     def walk_calls(node, func_nid: str) -> None:
         t = node.type
         if t in ("function_definition", "class_definition"):
@@ -501,13 +526,13 @@ def extract_gdscript(path: Path) -> dict:
         elif t == "attribute":
             receiver = node.children[0] if node.children else None
             attr_call = next((c for c in node.children if c.type == "attribute_call"), None)
+            receiver_name = (
+                _read_text(receiver, source) if receiver is not None
+                and receiver.type == "identifier" else None
+            )
             if attr_call is not None and attr_call.children:
                 method_node = attr_call.children[0]
                 method = _read_text(method_node, source) if method_node.type == "identifier" else None
-                receiver_name = (
-                    _read_text(receiver, source) if receiver is not None
-                    and receiver.type == "identifier" else None
-                )
                 args = attr_call.child_by_field_name("arguments")
                 if receiver_name in signal_names and method in ("emit", "connect"):
                     # `health_changed.emit(...)` / `died.connect(_on_died)` — the
@@ -529,18 +554,18 @@ def extract_gdscript(path: Path) -> dict:
                              target_file=os.path.normpath(str(autoload_target)))
                     add_edge(func_nid, _make_id("autoload", receiver_name),
                              "references", line, context="autoload")
+                elif known_class_receiver(receiver_name):
+                    # `Foo.new()` / `Foo.build()` — the receiver is the class itself.
+                    # `new` is the engine constructor, not user code, so it gets only
+                    # the static reference and never a calls edge.
+                    resolve_type(receiver, func_nid, "static", line)
+                    if method and method != "new" and method not in _GDSCRIPT_BUILTINS:
+                        emit_method_call(method, func_nid, line)
                 elif method and method not in _GDSCRIPT_BUILTINS:
-                    method_nid = _make_id(stem, method)
-                    if method_nid in seen_ids:
-                        add_edge(func_nid, method_nid, "calls", line, context="call")
-                    else:
-                        raw_calls.append({
-                            "caller_nid": func_nid,
-                            "callee": method,
-                            "is_member_call": True,
-                            "source_file": str_path,
-                            "source_location": f"L{line}",
-                        })
+                    emit_method_call(method, func_nid, line)
+            elif known_class_receiver(receiver_name):
+                # `Constants.MAX_HP` — attribute access on a known class with no call.
+                resolve_type(receiver, func_nid, "static", line)
 
         for child in node.children:
             walk_calls(child, func_nid)
