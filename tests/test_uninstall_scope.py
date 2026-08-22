@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from graphify.install import (
+    _platform_skill_destination,
     _project_uninstall,
     claude_uninstall,
     codebuddy_uninstall,
@@ -40,6 +41,15 @@ def _plant_skill_tree(root: Path, dot_dir: str) -> Path:
     return skill_dir
 
 
+def _global_dot_dir(platform: str) -> str:
+    """Top-level directory a platform's user-scope skill lives in.
+
+    Not always the project-scope directory: gemini's global skill goes to
+    .agents on Windows.
+    """
+    return _platform_skill_destination(platform, project=False).parents[2].name
+
+
 @pytest.mark.parametrize("uninstall_fn,platform,dot_dir", PLATFORMS)
 def test_project_dir_call_never_touches_global(uninstall_fn, platform, dot_dir, tmp_path):
     """fn(project_dir) removes only the project skill tree (#2215 trap closed)."""
@@ -59,7 +69,7 @@ def test_project_dir_call_never_touches_global(uninstall_fn, platform, dot_dir, 
 @pytest.mark.parametrize("uninstall_fn,platform,dot_dir", PLATFORMS)
 def test_bare_call_still_removes_global(uninstall_fn, platform, dot_dir, tmp_path, monkeypatch):
     """fn() with no args keeps the historical CLI behavior: global skill removed."""
-    global_tree = _plant_skill_tree(Path.home(), dot_dir)
+    global_tree = _plant_skill_tree(Path.home(), _global_dot_dir(platform))
     cwd = tmp_path / "empty-cwd"
     cwd.mkdir()
     monkeypatch.chdir(cwd)
@@ -73,7 +83,7 @@ def test_bare_call_still_removes_global(uninstall_fn, platform, dot_dir, tmp_pat
 @pytest.mark.parametrize("uninstall_fn,platform,dot_dir", PLATFORMS)
 def test_remove_user_skill_opt_in_with_project_dir(uninstall_fn, platform, dot_dir, tmp_path):
     """fn(pd, remove_user_skill=True) removes the global skill, leaves the project tree."""
-    global_tree = _plant_skill_tree(Path.home(), dot_dir)
+    global_tree = _plant_skill_tree(Path.home(), _global_dot_dir(platform))
     proj_dir = tmp_path / "proj"
     project_tree = _plant_skill_tree(proj_dir, dot_dir)
 

@@ -1161,7 +1161,7 @@ def test_hermes_skill_destination_posix_uses_home():
     from graphify.__main__ import _platform_skill_destination
     with patch("graphify.__main__.platform.system", return_value="Linux"):
         dst = _platform_skill_destination("hermes", project=False)
-    assert str(dst).endswith(".hermes/skills/graphify/SKILL.md"), dst
+    assert dst.as_posix().endswith(".hermes/skills/graphify/SKILL.md"), dst
 
 
 def _cli_dispatched_commands() -> set[str]:
