@@ -13,3 +13,8 @@ func hit(by: Weapon) -> Weapon:
 
 func ammo_cap() -> int:
 	return Weapon.MAX_AMMO
+
+
+func use_weapon() -> void:
+	current_weapon.reload()
+	var x = current_weapon.ammo
