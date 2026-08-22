@@ -5,3 +5,8 @@ config_version=5
 
 config/name="Godot Fixture"
 run/main_scene="res://player.tscn"
+
+[autoload]
+
+EventBus="*res://event_bus.gd"
+GameData="*uid://kb8cc1vpp45t"
