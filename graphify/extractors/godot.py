@@ -636,6 +636,26 @@ def _godot_section_attrs(raw: str) -> dict[str, str]:
     return attrs
 
 
+def _resolve_node_path(ref: str, owner_path: str) -> str | None:
+    """Resolve a NodePath value written on the node at `owner_path` into a
+    root-anchored scene path ("." is the root, its children are "Name", deeper
+    nodes "Parent/Name"). Returns None for a SceneTree-absolute path, which
+    names a node outside this scene, and for a path that walks above the root."""
+    if ref.startswith("/"):
+        return None
+    parts = [] if owner_path == "." else owner_path.split("/")
+    for segment in ref.split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "..":
+            if not parts:
+                return None
+            parts.pop()
+        else:
+            parts.append(segment)
+    return "/".join(parts) if parts else "."
+
+
 def extract_godot_scene(path: Path) -> dict:
     """Extract the node tree, ext_resource references, script attachments, scene
     instances, and signal connections from a Godot .tscn/.tres file."""
@@ -714,7 +734,7 @@ def extract_godot_scene(path: Path) -> dict:
     pending_sub_refs: list[tuple[str, str, int]] = []
     # A NodePath may name a node whose [node] header hasn't been read yet, so
     # resolution happens after the loop.
-    pending_node_paths: list[tuple[str, str, int, str]] = []
+    pending_node_paths: list[tuple[str, str, str, int, str]] = []
     # A section's script may be declared before or after the properties it
     # governs, so member-binding edges (section_nid -> script member) also wait
     # until the whole file has been read.
@@ -747,6 +767,9 @@ def extract_godot_scene(path: Path) -> dict:
     # are inspected, so a megabyte PackedVector3Array elsewhere is never parsed.
     section: str | None = None
     section_nid: str | None = None
+    # NodePath values are relative to the node holding them; a section without
+    # an owning node (a sub-resource, a [resource]) is read from the root.
+    section_owner_path = "."
 
     for lineno, line in enumerate(src.splitlines(), 1):
         if line.startswith("["):
@@ -755,6 +778,7 @@ def extract_godot_scene(path: Path) -> dict:
                 continue
             section, raw_attrs = m.group(1), m.group(2)
             section_nid = None
+            section_owner_path = "."
             attrs = _godot_section_attrs(raw_attrs)
 
             if section == "gd_resource":
@@ -822,6 +846,7 @@ def extract_godot_scene(path: Path) -> dict:
                         add_edge(nid, target_nid, "embeds", lineno,
                                  context="instance", target_file=abs_target)
                 section_nid = nid
+                section_owner_path = node_path
 
             elif section == "resource":
                 # [resource] properties belong to the .tres file itself.
@@ -896,7 +921,8 @@ def extract_godot_scene(path: Path) -> dict:
                                          context=key, target_file=abs_target)
                         elif nodepath_ref:
                             node_path = nodepath_ref.group(1).split(":")[0]
-                            pending_node_paths.append((section_nid, node_path, lineno, key))
+                            pending_node_paths.append(
+                                (section_nid, section_owner_path, node_path, lineno, key))
                         else:
                             add_property(section_nid, key, value)
 
@@ -911,9 +937,12 @@ def extract_godot_scene(path: Path) -> dict:
             member_nid = _make_id(_file_stem(script_path), key)
             add_edge(sec_nid, member_nid, "references", lineno, context="property")
 
-    for section_nid, node_path, lineno, key in pending_node_paths:
-        target_nid = node_path_to_nid.get(node_path)
-        if target_nid is not None:
+    for section_nid, owner_path, node_path, lineno, key in pending_node_paths:
+        resolved = _resolve_node_path(node_path, owner_path)
+        if resolved is None:
+            continue
+        target_nid = node_path_to_nid.get(resolved)
+        if target_nid is not None and target_nid != section_nid:
             add_edge(section_nid, target_nid, "references", lineno, context=key)
 
     for node in nodes:
