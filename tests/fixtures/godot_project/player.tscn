@@ -10,12 +10,14 @@ extra_shape = SubResource("CircleShape2D_1")
 
 [node name="Player" type="CharacterBody2D"]
 script = ExtResource("1_script")
+visible = true
 
 [node name="Sprite2D" type="Sprite2D" parent="."]
 texture = SubResource("Missing_1")
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
 shape = SubResource("RectangleShape2D_1")
+target_path = NodePath("Sprite2D")
 
 [node name="Hud" parent="." instance=ExtResource("2_hud")]
 

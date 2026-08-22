@@ -1,8 +1,12 @@
-[gd_resource type="Resource" script_class="Player" load_steps=2 format=3 uid="uid://fixture0ammo"]
+[gd_resource type="Resource" script_class="Player" load_steps=3 format=3 uid="uid://fixture0ammo"]
 
 [ext_resource type="Script" path="res://player.gd" id="1_ammo"]
+[ext_resource type="PackedScene" path="res://hud.tscn" id="2_hud"]
 
 [resource]
 script = ExtResource("1_ammo")
 pickup_quantity = 10
 string_id = &"ammo_fixture"
+icon_path = "res://bullet.tscn"
+preview_scene = ExtResource("2_hud")
+missing_icon = "res://does_not_exist.tres"
