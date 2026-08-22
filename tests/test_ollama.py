@@ -69,6 +69,27 @@ def test_detect_backend_kimi_beats_ollama(monkeypatch):
     assert detect_backend() == "kimi"
 
 
+def _delenv_backend_selectors(monkeypatch):
+    """Clear every environment variable detect_backend() selects on.
+
+    A custom provider in the developer's own ~/.graphify/providers.json is
+    merged into BACKENDS when graphify.llm is imported, which happens before the
+    sandbox-home fixture can redirect Path.home(). Naming one provider here
+    would only fix the machine it was written on.
+
+    Bedrock, Azure and Ollama are chosen without an API key, so their selectors
+    are not reachable through _backend_env_keys and are listed explicitly.
+    """
+    from graphify import llm
+
+    for name in llm.BACKENDS:
+        for env_key in llm._backend_env_keys(name):
+            monkeypatch.delenv(env_key, raising=False)
+    for env_key in ("AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+                    "AZURE_OPENAI_ENDPOINT", "OLLAMA_HOST", "OLLAMA_BASE_URL"):
+        monkeypatch.delenv(env_key, raising=False)
+
+
 def test_detect_backend_claude_beats_ollama(monkeypatch):
     # ANTHROPIC_API_KEY (paid, intentional) should win over OLLAMA_BASE_URL
     # (env-driven, easy to set accidentally) -- security fix F-002/F-029.
@@ -84,6 +105,7 @@ def test_detect_backend_none_without_envvars(monkeypatch):
     monkeypatch.delenv("MOONSHOT_API_KEY", raising=False)
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    _delenv_backend_selectors(monkeypatch)
     assert detect_backend() is None
 
 
