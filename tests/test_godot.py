@@ -7,7 +7,7 @@ import pytest
 
 from graphify.extract import extract, extract_gdscript, extract_godot_scene
 from graphify.extractors.base import _file_stem, _make_id
-from graphify.extractors.godot import _GODOT_PROPERTIES_CAP
+from graphify.extractors.godot import _GODOT_PROPERTIES_CAP, _class_name_map
 
 FIXTURES = Path(__file__).parent / "fixtures" / "godot_project"
 
@@ -154,6 +154,90 @@ def test_gd_no_dangling_edges():
     for e in r["edges"]:
         assert e["source"] in ids, e
         assert e["target"] in ids, e
+
+
+# ── Type annotations (var/const, parameters, return types) ───────────────────
+
+def test_gd_var_type_targets_user_class_in_other_file():
+    fighter = extract_gdscript(FIXTURES / "fighter.gd")
+    weapon = extract_gdscript(FIXTURES / "weapon.gd")
+    weapon_id = _node_by_label(weapon, "Weapon")["id"]
+    var_id = _node_by_label(fighter, "current_weapon")["id"]
+    ref_edges = {
+        (e["source"], e["target"]) for e in fighter["edges"]
+        if e["relation"] == "references" and e.get("context") == "var_type"
+    }
+    assert (var_id, weapon_id) in ref_edges
+    edge = next(e for e in fighter["edges"] if e["target"] == weapon_id)
+    assert edge["target_file"].endswith("weapon.gd")
+
+
+def test_gd_engine_type_annotation_becomes_concept_node():
+    r = extract_gdscript(FIXTURES / "fighter.gd")
+    concept = _node_by_label(r, "Area3D")
+    assert concept["file_type"] == "concept"
+    assert concept["id"] == _make_id("godot", "Area3D")
+    hitbox_id = _node_by_label(r, "hitbox")["id"]
+    ref_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "var_type"
+    }
+    assert (hitbox_id, concept["id"]) in ref_edges
+
+
+def test_gd_value_type_annotation_produces_no_edge():
+    r = extract_gdscript(FIXTURES / "fighter.gd")
+    speed_id = _node_by_label(r, "speed_limit")["id"]
+    assert not [e for e in r["edges"] if e["source"] == speed_id]
+
+
+def test_gd_generic_annotation_resolves_to_last_segment():
+    fighter = extract_gdscript(FIXTURES / "fighter.gd")
+    weapon = extract_gdscript(FIXTURES / "weapon.gd")
+    weapon_id = _node_by_label(weapon, "Weapon")["id"]
+    ammo_id = _node_by_label(fighter, "extra_ammo")["id"]
+    ref_edges = {
+        (e["source"], e["target"]) for e in fighter["edges"]
+        if e["relation"] == "references" and e.get("context") == "var_type"
+    }
+    assert (ammo_id, weapon_id) in ref_edges
+
+
+def test_gd_qualified_annotation_resolves_to_last_segment(tmp_path):
+    fixture = tmp_path / "q.gd"
+    fixture.write_text("extends Node\n\nvar q: Outer.Area3D\n", encoding="utf-8")
+    r = extract_gdscript(fixture)
+    concept = _node_by_label(r, "Area3D")
+    q_id = _node_by_label(r, "q")["id"]
+    ref_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "var_type"
+    }
+    assert (q_id, concept["id"]) in ref_edges
+
+
+def test_gd_function_parameter_and_return_type_edges():
+    fighter = extract_gdscript(FIXTURES / "fighter.gd")
+    weapon = extract_gdscript(FIXTURES / "weapon.gd")
+    weapon_id = _node_by_label(weapon, "Weapon")["id"]
+    hit_id = _node_by_label(fighter, "hit()")["id"]
+    param_edges = {
+        (e["source"], e["target"]) for e in fighter["edges"]
+        if e["relation"] == "references" and e.get("context") == "parameter_type"
+    }
+    return_edges = {
+        (e["source"], e["target"]) for e in fighter["edges"]
+        if e["relation"] == "references" and e.get("context") == "return_type"
+    }
+    assert (hit_id, weapon_id) in param_edges
+    assert (hit_id, weapon_id) in return_edges
+
+
+def test_class_name_map_cached_across_sibling_files():
+    first = _class_name_map(FIXTURES / "player.gd")
+    second = _class_name_map(FIXTURES / "enemy.gd")
+    assert first is second
+    assert first["Weapon"].resolve() == (FIXTURES / "weapon.gd").resolve()
 
 
 # ── Scenes (.tscn) ────────────────────────────────────────────────────────────
