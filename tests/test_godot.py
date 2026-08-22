@@ -635,6 +635,48 @@ def test_tscn_nodepath_with_subproperty_resolves_to_node(tmp_path):
     assert not [e for e in ref_edges if e[2] == "sibling"]
 
 
+def test_tscn_nodepath_resolves_to_node_declared_later(tmp_path):
+    fixture = tmp_path / "forward.tscn"
+    fixture.write_text(
+        '[gd_scene format=3]\n\n'
+        '[node name="Player" type="Node"]\n\n'
+        '[node name="Watcher" type="Node" parent="."]\n'
+        'target = NodePath("Target")\n'
+        'sibling = NodePath("../Sibling")\n\n'
+        '[node name="Target" type="Node" parent="."]\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
+    watcher_id = _node_by_label(r, "Watcher")["id"]
+    target_id = _node_by_label(r, "Target")["id"]
+    ref_edges = {
+        (e["source"], e["target"], e.get("context")) for e in r["edges"]
+        if e["relation"] == "references"
+    }
+    assert (watcher_id, target_id, "target") in ref_edges
+    assert not [e for e in ref_edges if e[2] == "sibling"]
+
+
+def test_tscn_nodepath_with_subproperty_resolves_to_later_node(tmp_path):
+    fixture = tmp_path / "forward_sub.tscn"
+    fixture.write_text(
+        '[gd_scene format=3]\n\n'
+        '[node name="Player" type="Node"]\n\n'
+        '[node name="Watcher" type="Node" parent="."]\n'
+        'target = NodePath("Target:some_property")\n\n'
+        '[node name="Target" type="Node" parent="."]\n',
+        encoding="utf-8",
+    )
+    r = extract_godot_scene(fixture)
+    watcher_id = _node_by_label(r, "Watcher")["id"]
+    target_id = _node_by_label(r, "Target")["id"]
+    ref_edges = {
+        (e["source"], e["target"], e.get("context")) for e in r["edges"]
+        if e["relation"] == "references"
+    }
+    assert (watcher_id, target_id, "target") in ref_edges
+
+
 def test_tscn_truncated_opener_value_produces_no_properties_entry(tmp_path):
     fixture = tmp_path / "truncated.tscn"
     fixture.write_text(

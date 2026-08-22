@@ -712,6 +712,9 @@ def extract_godot_scene(path: Path) -> dict:
     # SubResource(...) refs may name an id whose [sub_resource] header hasn't
     # been read yet, so resolution happens after the loop.
     pending_sub_refs: list[tuple[str, str, int]] = []
+    # A NodePath may name a node whose [node] header hasn't been read yet, so
+    # resolution happens after the loop.
+    pending_node_paths: list[tuple[str, str, int, str]] = []
     # A section's script may be declared before or after the properties it
     # governs, so member-binding edges (section_nid -> script member) also wait
     # until the whole file has been read.
@@ -893,10 +896,7 @@ def extract_godot_scene(path: Path) -> dict:
                                          context=key, target_file=abs_target)
                         elif nodepath_ref:
                             node_path = nodepath_ref.group(1).split(":")[0]
-                            target_nid = node_path_to_nid.get(node_path)
-                            if target_nid is not None:
-                                add_edge(section_nid, target_nid, "references", lineno,
-                                         context=key)
+                            pending_node_paths.append((section_nid, node_path, lineno, key))
                         else:
                             add_property(section_nid, key, value)
 
@@ -910,6 +910,11 @@ def extract_godot_scene(path: Path) -> dict:
         if script_path is not None:
             member_nid = _make_id(_file_stem(script_path), key)
             add_edge(sec_nid, member_nid, "references", lineno, context="property")
+
+    for section_nid, node_path, lineno, key in pending_node_paths:
+        target_nid = node_path_to_nid.get(node_path)
+        if target_nid is not None:
+            add_edge(section_nid, target_nid, "references", lineno, context=key)
 
     for node in nodes:
         state = section_properties.get(node["id"])
