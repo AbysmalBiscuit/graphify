@@ -44,6 +44,61 @@ def _godot_project_root(path: Path) -> Path | None:
     return None
 
 
+# Value types: a type annotation resolving to one of these is never a
+# same-corpus cross-reference, and the annotation volume in a typed GDScript
+# codebase would otherwise turn them into thousand-edge hub nodes (Global
+# Constraint 4). `void` isn't part of Godot's value-type vocabulary but is
+# the return-type annotation on every function with no return value, making
+# it the worst-case hub of all if left unfiltered.
+_GDSCRIPT_VALUE_TYPES: frozenset[str] = frozenset({
+    "int", "float", "bool", "String", "StringName", "NodePath", "Variant",
+    "Callable", "Signal", "RID", "Array", "Dictionary",
+    "Vector2", "Vector2i", "Vector3", "Vector3i", "Vector4", "Vector4i",
+    "Color", "Rect2", "Rect2i", "Plane", "Quaternion", "Basis", "AABB",
+    "Transform2D", "Transform3D", "Projection", "void",
+}) | {name for name in _GDSCRIPT_BUILTINS if name.startswith("Packed")}
+
+
+_CLASS_NAME_RE = re.compile(r"^class_name\s+([A-Za-z_]\w*)", re.MULTILINE)
+_class_name_maps: dict[Path, dict[str, Path]] = {}
+
+
+def _class_name_map(path: Path) -> dict[str, Path]:
+    """Project-wide `class_name X` -> declaring-file map, memoized per project
+    root so a corpus of N scripts pays for one line-scan pass, not N.
+
+    Read with a regex, not tree-sitter: every file contributes at most the one
+    line this needs, and running the grammar over the whole project just to
+    find it would dwarf the cost of the extraction this map serves.
+    """
+    root = _godot_project_root(path) or path.parent
+    try:
+        root = root.resolve()
+    except OSError:
+        pass
+    cached = _class_name_maps.get(root)
+    if cached is not None:
+        return cached
+
+    mapping: dict[str, Path] = {}
+    for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _: None):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for name in filenames:
+            if not name.endswith(".gd"):
+                continue
+            gd_path = Path(dirpath) / name
+            try:
+                text = gd_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            m = _CLASS_NAME_RE.search(text)
+            if m and m.group(1) not in mapping:
+                mapping[m.group(1)] = gd_path
+
+    _class_name_maps[root] = mapping
+    return mapping
+
+
 def _resolve_res_path(res_path: str, path: Path) -> Path | None:
     """Resolve a Godot resource reference to an existing file.
 
@@ -124,13 +179,13 @@ def extract_gdscript(path: Path) -> dict:
     signal_names: set[str] = set()
     function_bodies: list[tuple[str, object]] = []
 
-    def add_node(nid: str, label: str, line: int) -> None:
+    def add_node(nid: str, label: str, line: int, *, file_type: str = "code") -> None:
         if nid not in seen_ids:
             seen_ids.add(nid)
             nodes.append({
                 "id": nid,
                 "label": label,
-                "file_type": "code",
+                "file_type": file_type,
                 "source_file": str_path,
                 "source_location": f"L{line}",
             })
@@ -200,6 +255,37 @@ def extract_gdscript(path: Path) -> dict:
             })
         return nid, norm_target
 
+    class_name_map = _class_name_map(path)
+
+    def _type_identifiers(node):
+        if node.type == "identifier":
+            yield node
+        for child in node.children:
+            yield from _type_identifiers(child)
+
+    def resolve_type(type_node, scope_nid: str, context: str, line: int) -> None:
+        """`var x: Foo`, `func f(a: Foo)`, `func f() -> Foo` — Foo becomes a
+        `references` edge. A generic (`Array[Foo]`) or qualified (`Outer.Inner`)
+        annotation takes its last identifier segment, same as `handle_extends`."""
+        idents = list(_type_identifiers(type_node))
+        if not idents:
+            return
+        name = _read_text(idents[-1], source)
+        if not name or name in _GDSCRIPT_VALUE_TYPES:
+            return
+        local_nid = _make_id(stem, name)
+        if local_nid in seen_ids:
+            add_edge(scope_nid, local_nid, "references", line, context=context)
+            return
+        mapped = class_name_map.get(name)
+        if mapped is not None:
+            add_edge(scope_nid, _make_id(_file_stem(mapped), name), "references", line,
+                     context=context, target_file=os.path.normpath(str(mapped)))
+            return
+        concept_nid = _make_id("godot", name)
+        add_node(concept_nid, name, line, file_type="concept")
+        add_edge(scope_nid, concept_nid, "references", line, context=context)
+
     # `class_name Foo` names the file's implicit class: it is the identifier other
     # scripts use (`extends Foo`, `Foo.bar()`), so it becomes the real node that
     # cross-file stubs rewire onto, and members hang off it instead of the file.
@@ -268,6 +354,17 @@ def extract_gdscript(path: Path) -> dict:
                 func_nid = _make_id(stem, func_name)
                 add_node(func_nid, f"{func_name}()", line)
                 add_edge(scope_nid, func_nid, "defines", line)
+                params = node.child_by_field_name("parameters")
+                if params:
+                    for param in params.children:
+                        if param.type == "typed_parameter":
+                            param_type = param.child_by_field_name("type")
+                            if param_type:
+                                resolve_type(param_type, func_nid, "parameter_type",
+                                             param.start_point[0] + 1)
+                return_type = node.child_by_field_name("return_type")
+                if return_type:
+                    resolve_type(return_type, func_nid, "return_type", line)
                 body = node.child_by_field_name("body")
                 if body:
                     function_bodies.append((func_nid, body))
@@ -280,6 +377,9 @@ def extract_gdscript(path: Path) -> dict:
                 var_nid = _make_id(stem, var_name)
                 add_node(var_nid, var_name, line)
                 add_edge(scope_nid, var_nid, "defines", line)
+                var_type = node.child_by_field_name("type")
+                if var_type:
+                    resolve_type(var_type, var_nid, "var_type", line)
             return
 
         if t == "signal_statement":
