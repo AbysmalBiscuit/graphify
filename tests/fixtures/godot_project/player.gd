@@ -18,6 +18,7 @@ const HELPER = preload("helper.gd")
 @onready var sprite: Sprite2D = $Sprite2D
 
 var health: int = 100
+var pickup_quantity: int = 0
 
 
 class Inventory:

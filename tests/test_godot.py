@@ -7,6 +7,7 @@ import pytest
 
 from graphify.extract import extract, extract_gdscript, extract_godot_scene
 from graphify.extractors.base import _file_stem, _make_id
+from graphify.extractors.godot import _GODOT_PROPERTIES_CAP
 
 FIXTURES = Path(__file__).parent / "fixtures" / "godot_project"
 
@@ -292,6 +293,24 @@ def test_tscn_sub_resource_with_no_header_produces_no_edge():
     assert not [e for e in embeds if e["source"] == sprite_id]
 
 
+def test_tscn_nodepath_property_resolves_to_scene_node():
+    r = extract_godot_scene(FIXTURES / "player.tscn")
+    collision_id = _node_by_label(r, "CollisionShape2D")["id"]
+    sprite_id = _node_by_label(r, "Sprite2D")["id"]
+    ref_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "target_path"
+    }
+    assert (collision_id, sprite_id) in ref_edges
+
+
+def test_tscn_noise_property_key_excluded_from_properties():
+    r = extract_godot_scene(FIXTURES / "player.tscn")
+    root = _node_by_label(r, "Player")
+    # "visible" is the root node's only non-script property, and it's noise.
+    assert "properties" not in root
+
+
 # ── Resources (.tres) ─────────────────────────────────────────────────────────
 
 def test_tres_script_class_is_rewireable_stub():
@@ -316,6 +335,79 @@ def test_tres_resource_script_references_script_file():
         if e["relation"] == "references" and e.get("context") == "script"
     }
     assert (file_id, script_id) in script_edges
+
+
+def test_tres_resource_scalars_become_properties_attribute():
+    r = extract_godot_scene(FIXTURES / "ammo.tres")
+    file_node = _node_by_label(r, "ammo.tres")
+    assert "pickup_quantity=10" in file_node["properties"]
+    assert "string_id=ammo_fixture" in file_node["properties"]
+
+
+def test_tres_member_binding_edge_lands_on_real_member():
+    r = extract_godot_scene(FIXTURES / "ammo.tres")
+    file_id = _node_by_label(r, "ammo.tres")["id"]
+    member_id = _make_id(_file_stem(FIXTURES / "player.gd"), "pickup_quantity")
+    prop_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "property"
+    }
+    assert (file_id, member_id) in prop_edges
+
+
+def test_tres_res_string_property_references_resolved_file():
+    r = extract_godot_scene(FIXTURES / "ammo.tres")
+    file_id = _node_by_label(r, "ammo.tres")["id"]
+    bullet_id = _node_by_label(r, "bullet.tscn")["id"]
+    ref_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "icon_path"
+    }
+    assert (file_id, bullet_id) in ref_edges
+
+
+def test_tres_ext_resource_property_references_target():
+    r = extract_godot_scene(FIXTURES / "ammo.tres")
+    file_id = _node_by_label(r, "ammo.tres")["id"]
+    hud_id = _node_by_label(r, "hud.tscn")["id"]
+    ref_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "preview_scene"
+    }
+    assert (file_id, hud_id) in ref_edges
+
+
+def test_tres_unresolvable_res_string_produces_nothing():
+    r = extract_godot_scene(FIXTURES / "ammo.tres")
+    ref_edges = [
+        e for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "missing_icon"
+    ]
+    assert not ref_edges
+    assert "does_not_exist" not in _labels(r)
+
+
+def test_godot_scene_properties_attribute_capped_at_500_chars(tmp_path):
+    value = "x" * 100
+    lines = ['[gd_resource type="Resource" format=3]', "", "[resource]"]
+    lines += [f"field_{i} = \"{value}\"" for i in range(10)]
+    fixture = tmp_path / "big.tres"
+    fixture.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    r = extract_godot_scene(fixture)
+    props = _node_by_label(r, "big.tres")["properties"]
+    assert len(props) <= _GODOT_PROPERTIES_CAP + len("; ...")
+    assert props.endswith("...")
+    assert "field_0=" in props
+    assert "field_9=" not in props
+
+
+def test_godot_scene_node_attributes_are_graphml_safe_scalars():
+    for fixture in ("player.tscn", "ammo.tres"):
+        r = extract_godot_scene(FIXTURES / fixture)
+        for node in r["nodes"]:
+            for key, value in node.items():
+                assert isinstance(value, (str, int, float, bool)), (fixture, key, value)
 
 
 # ── Full pipeline (same-stem .gd/.tscn collision, cross-file resolution) ──────

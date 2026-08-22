@@ -415,6 +415,20 @@ _GODOT_SECTION_RE = re.compile(r"^\[(\w+)\s*(.*?)\]\s*$")
 _GODOT_ATTR_RE = re.compile(r'([\w/]+)\s*=\s*(?:"((?:[^"\\]|\\.)*)"|(\S+))')
 _GODOT_EXT_REF_RE = re.compile(r'ExtResource\(\s*"?([^")]+?)"?\s*\)')
 _GODOT_SUB_REF_RE = re.compile(r'SubResource\(\s*"?([^")]+?)"?\s*\)')
+_GODOT_PROPERTY_RE = re.compile(r"^([\w/]+)\s*=\s*(.*)$")
+_GODOT_QUOTED_RE = re.compile(r'^"([^"]*)"$')
+_GODOT_NODEPATH_RE = re.compile(r'^NodePath\(\s*"([^"]*)"\s*\)$')
+
+# Per-instance engine transform and editor state: present on nearly every node,
+# carries no architectural meaning, and would otherwise dominate the
+# `properties` attribute.
+_GODOT_NOISE_PROPERTY_KEYS: frozenset[str] = frozenset({
+    "transform", "position", "rotation", "scale", "size",
+    "offset_left", "offset_top", "offset_right", "offset_bottom",
+    "anchor_left", "anchor_top", "anchor_right", "anchor_bottom",
+    "global_position", "visible", "z_index", "modulate", "self_modulate",
+})
+_GODOT_PROPERTIES_CAP = 500
 
 
 def _godot_section_attrs(raw: str) -> dict[str, str]:
@@ -493,13 +507,38 @@ def extract_godot_scene(path: Path) -> dict:
     file_nid = _make_id(str(path))
     add_node(file_nid, path.name, 1)
 
-    ext_resources: dict[str, tuple[str, str]] = {}  # ext_resource id -> (node id, abs path)
+    ext_resources: dict[str, tuple[str, str, Path]] = {}  # id -> (node id, abs path, resolved path)
     sub_resources: dict[str, str] = {}  # sub_resource id -> node id
     node_path_to_nid: dict[str, str] = {}  # scene-tree path ("." = root) -> node id
     root_nid: str | None = None
     # SubResource(...) refs may name an id whose [sub_resource] header hasn't
     # been read yet, so resolution happens after the loop.
     pending_sub_refs: list[tuple[str, str, int]] = []
+    # A section's script may be declared before or after the properties it
+    # governs, so member-binding edges (section_nid -> script member) also wait
+    # until the whole file has been read.
+    section_scripts: dict[str, Path] = {}
+    pending_members: list[tuple[str, str, int]] = []
+    section_properties: dict[str, dict] = {}
+
+    def add_property(nid: str, key: str, value: str) -> None:
+        if key in _GODOT_NOISE_PROPERTY_KEYS or key.startswith(("metadata/", "editor_")):
+            return
+        cleaned = value[1:] if value.startswith("&") else value
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] == '"':
+            cleaned = cleaned[1:-1]
+        if len(cleaned) > 120:
+            return
+        state = section_properties.setdefault(nid, {"text": "", "capped": False})
+        if state["capped"]:
+            return
+        piece = f"{key}={cleaned}"
+        addition = f"; {piece}" if state["text"] else piece
+        if len(state["text"]) + len(addition) > _GODOT_PROPERTIES_CAP:
+            state["text"] += "; ..." if state["text"] else "..."
+            state["capped"] = True
+            return
+        state["text"] += addition
 
     # Per-section state: only [node] / [resource] / [sub_resource] property lines
     # are inspected, so a megabyte PackedVector3Array elsewhere is never parsed.
@@ -543,7 +582,7 @@ def extract_godot_scene(path: Path) -> dict:
                     add_edge(file_nid, target_nid, "imports", lineno,
                              context="ext_resource", target_file=abs_target)
                     if res_id:
-                        ext_resources[res_id] = (target_nid, abs_target)
+                        ext_resources[res_id] = (target_nid, abs_target, target)
 
             elif section == "node":
                 name = attrs.get("name")
@@ -576,7 +615,7 @@ def extract_godot_scene(path: Path) -> dict:
                 if instance:
                     ref = _GODOT_EXT_REF_RE.search(instance)
                     if ref and ref.group(1) in ext_resources:
-                        target_nid, abs_target = ext_resources[ref.group(1)]
+                        target_nid, abs_target, _ = ext_resources[ref.group(1)]
                         add_edge(nid, target_nid, "embeds", lineno,
                                  context="instance", target_file=abs_target)
                 section_nid = nid
@@ -616,24 +655,64 @@ def extract_godot_scene(path: Path) -> dict:
                     })
             continue
 
-        # Property line inside a section with a node: the script attachment is
-        # structural, and a SubResource(...) reference embeds that sub-resource
-        # — everything else is engine data.
+        # Property line inside a section with a node. A SubResource(...) reference
+        # embeds that sub-resource regardless of which key holds it, so every line
+        # is scanned for one; a full `key = value` line is classified below.
         if section_nid is not None:
             for ref in _GODOT_SUB_REF_RE.finditer(line):
                 pending_sub_refs.append((section_nid, ref.group(1), lineno))
-            if line.startswith("script") and "=" in line:
-                key, _, value = line.partition("=")
-                if key.strip() == "script":
-                    ref = _GODOT_EXT_REF_RE.search(value)
-                    if ref and ref.group(1) in ext_resources:
-                        target_nid, abs_target = ext_resources[ref.group(1)]
-                        add_edge(section_nid, target_nid, "references",
-                                 lineno, context="script", target_file=abs_target)
+
+            prop = _GODOT_PROPERTY_RE.match(line)
+            if prop:
+                key, value = prop.group(1), prop.group(2).strip()
+                ext_ref = _GODOT_EXT_REF_RE.search(value)
+
+                if key == "script":
+                    if ext_ref and ext_ref.group(1) in ext_resources:
+                        target_nid, abs_target, script_path = ext_resources[ext_ref.group(1)]
+                        add_edge(section_nid, target_nid, "references", lineno,
+                                 context="script", target_file=abs_target)
+                        section_scripts[section_nid] = script_path
+                else:
+                    pending_members.append((section_nid, key, lineno))
+                    if ext_ref:
+                        if ext_ref.group(1) in ext_resources:
+                            target_nid, abs_target, _ = ext_resources[ext_ref.group(1)]
+                            add_edge(section_nid, target_nid, "references", lineno,
+                                     context=key, target_file=abs_target)
+                    elif _GODOT_SUB_REF_RE.search(value):
+                        pass  # embedded by the per-line scan above
+                    else:
+                        quoted = _GODOT_QUOTED_RE.match(value)
+                        nodepath_ref = _GODOT_NODEPATH_RE.match(value)
+                        if quoted and quoted.group(1).startswith(("res://", "uid://")):
+                            target = _resolve_res_path(quoted.group(1), path)
+                            if target is not None:
+                                target_nid, abs_target = add_file_ref_node(target, lineno)
+                                add_edge(section_nid, target_nid, "references", lineno,
+                                         context=key, target_file=abs_target)
+                        elif nodepath_ref:
+                            target_nid = node_path_to_nid.get(nodepath_ref.group(1))
+                            if target_nid is not None:
+                                add_edge(section_nid, target_nid, "references", lineno,
+                                         context=key)
+                        else:
+                            add_property(section_nid, key, value)
 
     for ref_nid, sub_id, lineno in pending_sub_refs:
         sub_nid = sub_resources.get(sub_id)
         if sub_nid is not None:
             add_edge(ref_nid, sub_nid, "embeds", lineno, context="sub_resource")
+
+    for sec_nid, key, lineno in pending_members:
+        script_path = section_scripts.get(sec_nid)
+        if script_path is not None:
+            member_nid = _make_id(_file_stem(script_path), key)
+            add_edge(sec_nid, member_nid, "references", lineno, context="property")
+
+    for node in nodes:
+        state = section_properties.get(node["id"])
+        if state and state["text"]:
+            node["properties"] = state["text"]
 
     return {"nodes": nodes, "edges": edges, "raw_calls": raw_calls}
