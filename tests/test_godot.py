@@ -295,6 +295,43 @@ def test_gd_value_type_attribute_access_stays_silent(tmp_path):
     assert not [e for e in r["edges"] if e["source"] == g_id]
 
 
+def test_gd_const_receiver_is_not_treated_as_class():
+    r = extract_gdscript(FIXTURES / "player.gd")
+    fire_id = _node_by_label(r, "fire()")["id"]
+    bullet_scene_id = _node_by_label(r, "BulletScene")["id"]
+    assert (fire_id, bullet_scene_id) not in _edge_pairs(r, "references")
+
+
+def test_gd_instance_var_receiver_is_not_treated_as_class():
+    r = extract_gdscript(FIXTURES / "fighter.gd")
+    use_weapon_id = _node_by_label(r, "use_weapon()")["id"]
+    current_weapon_id = _node_by_label(r, "current_weapon")["id"]
+    assert (use_weapon_id, current_weapon_id) not in _edge_pairs(r, "references")
+    static_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "static"
+    }
+    assert not [e for e in static_edges if e[0] == use_weapon_id]
+
+
+def test_gd_function_name_receiver_is_not_treated_as_class(tmp_path):
+    fixture = tmp_path / "h.gd"
+    fixture.write_text(
+        "extends Node\n\n\nfunc helper() -> void:\n\tpass\n\n\n"
+        "func f() -> void:\n\tvar y = helper.bind(1)\n",
+        encoding="utf-8",
+    )
+    r = extract_gdscript(fixture)
+    f_id = _node_by_label(r, "f()")["id"]
+    helper_id = _node_by_label(r, "helper()")["id"]
+    assert (f_id, helper_id) not in _edge_pairs(r, "references")
+    static_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "static"
+    }
+    assert not [e for e in static_edges if e[0] == f_id]
+
+
 def test_class_name_map_cached_across_sibling_files():
     first = _class_name_map(FIXTURES / "player.gd")
     second = _class_name_map(FIXTURES / "enemy.gd")

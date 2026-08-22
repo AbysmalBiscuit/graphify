@@ -229,6 +229,7 @@ def extract_gdscript(path: Path) -> dict:
     raw_calls: list[dict] = []
     seen_ids: set[str] = set()
     signal_names: set[str] = set()
+    class_names: set[str] = set()
     function_bodies: list[tuple[str, object]] = []
 
     def add_node(nid: str, label: str, line: int, *, file_type: str = "code") -> None:
@@ -316,28 +317,41 @@ def extract_gdscript(path: Path) -> dict:
         for child in node.children:
             yield from _type_identifiers(child)
 
-    def resolve_type(type_node, scope_nid: str, context: str, line: int) -> None:
+    def resolve_type(type_node, scope_nid: str, context: str, line: int, *,
+                      class_only: bool = False, allow_fallback: bool = True) -> bool:
         """`var x: Foo`, `func f(a: Foo)`, `func f() -> Foo` — Foo becomes a
         `references` edge. A generic (`Array[Foo]`) or qualified (`Outer.Inner`)
-        annotation takes its last identifier segment, same as `handle_extends`."""
+        annotation takes its last identifier segment, same as `handle_extends`.
+        Returns whether a `references` edge was emitted.
+
+        `class_only` restricts the same-file match to an actual class
+        (`class_names`) instead of any same-file symbol — a call-site
+        receiver can just as easily be an ordinary var/const/func sharing
+        that name, unlike a type-annotation position, which always denotes a
+        type. `allow_fallback` controls whether an unresolved name still
+        mints a `concept` node; a call-site receiver that resolves to
+        nothing must stay silent rather than flood the graph."""
         idents = list(_type_identifiers(type_node))
         if not idents:
-            return
+            return False
         name = _read_text(idents[-1], source)
         if not name or name in _GDSCRIPT_VALUE_TYPES:
-            return
-        local_nid = _make_id(stem, name)
-        if local_nid in seen_ids:
-            add_edge(scope_nid, local_nid, "references", line, context=context)
-            return
+            return False
+        is_local = name in class_names if class_only else _make_id(stem, name) in seen_ids
+        if is_local:
+            add_edge(scope_nid, _make_id(stem, name), "references", line, context=context)
+            return True
         mapped = class_name_map.get(name)
         if mapped is not None:
             add_edge(scope_nid, _make_id(_file_stem(mapped), name), "references", line,
                      context=context, target_file=os.path.normpath(str(mapped)))
-            return
+            return True
+        if not allow_fallback:
+            return False
         concept_nid = _make_id("godot", name)
         add_node(concept_nid, name, line, file_type="concept")
         add_edge(scope_nid, concept_nid, "references", line, context=context)
+        return True
 
     # `class_name Foo` names the file's implicit class: it is the identifier other
     # scripts use (`extends Foo`, `Foo.bar()`), so it becomes the real node that
@@ -350,6 +364,7 @@ def extract_gdscript(path: Path) -> dict:
                 cls_name = _read_text(name_node, source)
                 line = child.start_point[0] + 1
                 class_name_nid = _make_id(stem, cls_name)
+                class_names.add(cls_name)
                 add_node(class_name_nid, cls_name, line)
                 add_edge(file_nid, class_name_nid, "defines", line)
             break
@@ -392,6 +407,7 @@ def extract_gdscript(path: Path) -> dict:
             if name_node:
                 cls_name = _read_text(name_node, source)
                 cls_nid = _make_id(stem, cls_name)
+                class_names.add(cls_name)
                 add_node(cls_nid, cls_name, line)
                 add_edge(scope_nid, cls_nid, "defines", line)
                 body = node.child_by_field_name("body")
@@ -480,18 +496,6 @@ def extract_gdscript(path: Path) -> dict:
                 "source_location": f"L{line}",
             })
 
-    def known_class_receiver(receiver_name: str | None) -> bool:
-        """A bare-identifier receiver naming a class, either defined in this
-        file or elsewhere via `class_name` — the same two cases `resolve_type`
-        resolves a type name against. Excludes engine builtins/value types so
-        `Vector3.ZERO` never qualifies (Global Constraint 4)."""
-        if (receiver_name is None
-                or receiver_name in _GDSCRIPT_BUILTINS
-                or receiver_name in _GDSCRIPT_VALUE_TYPES):
-            return False
-        return (_make_id(stem, receiver_name) in seen_ids
-                or receiver_name in class_name_map)
-
     def walk_calls(node, func_nid: str) -> None:
         t = node.type
         if t in ("function_definition", "class_definition"):
@@ -554,18 +558,20 @@ def extract_gdscript(path: Path) -> dict:
                              target_file=os.path.normpath(str(autoload_target)))
                     add_edge(func_nid, _make_id("autoload", receiver_name),
                              "references", line, context="autoload")
-                elif known_class_receiver(receiver_name):
+                elif (receiver_name is not None and receiver_name not in _GDSCRIPT_BUILTINS
+                        and resolve_type(receiver, func_nid, "static", line,
+                                          class_only=True, allow_fallback=False)):
                     # `Foo.new()` / `Foo.build()` — the receiver is the class itself.
                     # `new` is the engine constructor, not user code, so it gets only
                     # the static reference and never a calls edge.
-                    resolve_type(receiver, func_nid, "static", line)
                     if method and method != "new" and method not in _GDSCRIPT_BUILTINS:
                         emit_method_call(method, func_nid, line)
                 elif method and method not in _GDSCRIPT_BUILTINS:
                     emit_method_call(method, func_nid, line)
-            elif known_class_receiver(receiver_name):
+            elif receiver_name is not None and receiver_name not in _GDSCRIPT_BUILTINS:
                 # `Constants.MAX_HP` — attribute access on a known class with no call.
-                resolve_type(receiver, func_nid, "static", line)
+                resolve_type(receiver, func_nid, "static", line,
+                             class_only=True, allow_fallback=False)
 
         for child in node.children:
             walk_calls(child, func_nid)
