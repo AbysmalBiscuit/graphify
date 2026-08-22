@@ -233,6 +233,68 @@ def test_gd_function_parameter_and_return_type_edges():
     assert (hit_id, weapon_id) in return_edges
 
 
+# ── Static class references (Foo.new(), Foo.method(), Foo.CONST) ─────────────
+
+def test_gd_static_new_call_emits_reference_only():
+    r = extract_gdscript(FIXTURES / "weapon.gd")
+    weapon_id = _node_by_label(r, "Weapon")["id"]
+    build_id = _node_by_label(r, "build()")["id"]
+    static_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "static"
+    }
+    assert (build_id, weapon_id) in static_edges
+    assert not [e for e in r["edges"] if e["source"] == build_id and e["relation"] == "calls"]
+    assert not any(rc["callee"] == "new" for rc in r["raw_calls"])
+
+
+def test_gd_static_method_call_keeps_calls_edge():
+    r = extract_gdscript(FIXTURES / "weapon.gd")
+    weapon_id = _node_by_label(r, "Weapon")["id"]
+    build_id = _node_by_label(r, "build()")["id"]
+    rebuild_id = _node_by_label(r, "rebuild()")["id"]
+    static_edges = {
+        (e["source"], e["target"]) for e in r["edges"]
+        if e["relation"] == "references" and e.get("context") == "static"
+    }
+    assert (rebuild_id, weapon_id) in static_edges
+    assert (rebuild_id, build_id) in _edge_pairs(r, "calls")
+
+
+def test_gd_static_attribute_access_without_call():
+    fighter = extract_gdscript(FIXTURES / "fighter.gd")
+    weapon = extract_gdscript(FIXTURES / "weapon.gd")
+    weapon_id = _node_by_label(weapon, "Weapon")["id"]
+    ammo_cap_id = _node_by_label(fighter, "ammo_cap()")["id"]
+    static_edges = {
+        (e["source"], e["target"]) for e in fighter["edges"]
+        if e["relation"] == "references" and e.get("context") == "static"
+    }
+    assert (ammo_cap_id, weapon_id) in static_edges
+
+
+def test_gd_plain_identifier_attribute_access_stays_silent(tmp_path):
+    fixture = tmp_path / "s.gd"
+    fixture.write_text(
+        "extends Node\n\n\nfunc f(some_node) -> void:\n\tvar p = some_node.position\n",
+        encoding="utf-8",
+    )
+    r = extract_gdscript(fixture)
+    f_id = _node_by_label(r, "f()")["id"]
+    assert not [e for e in r["edges"] if e["source"] == f_id]
+
+
+def test_gd_value_type_attribute_access_stays_silent(tmp_path):
+    fixture = tmp_path / "v.gd"
+    fixture.write_text(
+        "extends Node\n\n\nfunc g() -> void:\n\tvar z = Vector3.ZERO\n",
+        encoding="utf-8",
+    )
+    r = extract_gdscript(fixture)
+    g_id = _node_by_label(r, "g()")["id"]
+    assert not [e for e in r["edges"] if e["source"] == g_id]
+
+
 def test_class_name_map_cached_across_sibling_files():
     first = _class_name_map(FIXTURES / "player.gd")
     second = _class_name_map(FIXTURES / "enemy.gd")
