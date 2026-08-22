@@ -3006,7 +3006,7 @@ def test_markdown_wikilink_fallback_unicode_normalization(tmp_path):
     name_nfc = unicodedata.normalize("NFC", "어휘 노트")
     (vault / f"{name_nfc}.md").write_text("# Term\n")
     name_nfd = unicodedata.normalize("NFD", name_nfc)
-    (vault / "log" / "entry.md").write_text(f"See [[{name_nfd}]].\n")
+    (vault / "log" / "entry.md").write_text(f"See [[{name_nfd}]].\n", encoding="utf-8")
     _, refs, page_id = _vault_extract(
         vault, [vault / f"{name_nfc}.md", vault / "log" / "entry.md"])
     entry_id = page_id(vault / "log" / "entry.md")
