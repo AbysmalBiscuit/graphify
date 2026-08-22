@@ -304,6 +304,47 @@ def test_godot_project_autoload_and_main_scene_edges():
     assert {"EventBus", "GameData"} <= singleton_labels
 
 
+def test_extract_pipeline_autoload_call_survives_stem_collision(tmp_path):
+    # game_data.gd and a same-stem game_data.tscn (a script + companion scene,
+    # an ordinary Godot pairing) collide on the bare id "game_data_load": the
+    # script's load() function and the scene's root node share it until the
+    # colliding-id pass salts them apart. That pass keys its salt by
+    # source_file, and for an edge whose id was minted from an ALREADY-RESOLVED
+    # absolute path (autoload_map, like class_name_map, resolves the project
+    # root) the edge's own source_file is the CALLER's file, not the target's
+    # — so without a target_file stamp naming game_data.gd, salting can't tell
+    # which variant the autoload call meant and the edge is left on the dead
+    # unsalted id.
+    (tmp_path / "project.godot").write_text(
+        '; Engine configuration file.\nconfig_version=5\n\n[autoload]\n\n'
+        'GameData="*res://game_data.gd"\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "game_data.gd").write_text(
+        "extends Node\n\n\nfunc load() -> void:\n\tpass\n", encoding="utf-8",
+    )
+    (tmp_path / "game_data.tscn").write_text(
+        '[gd_scene format=3]\n\n[node name="load" type="Node"]\n', encoding="utf-8",
+    )
+    (tmp_path / "event_bus.gd").write_text(
+        "extends Node\n\n\nfunc notify() -> void:\n\tGameData.load()\n", encoding="utf-8",
+    )
+    files = [tmp_path / "event_bus.gd", tmp_path / "game_data.gd", tmp_path / "game_data.tscn"]
+
+    result = extract(files, cache_root=tmp_path, root=tmp_path, parallel=False)
+    ids = {n["id"] for n in result["nodes"]}
+    by_id = {n["id"]: n for n in result["nodes"]}
+
+    calls = [
+        e for e in result["edges"]
+        if e["relation"] == "calls" and e.get("context") == "autoload"
+    ]
+    assert calls
+    for e in calls:
+        assert e["target"] in ids, e
+        assert str(by_id[e["target"]]["source_file"]).endswith("game_data.gd")
+
+
 # ── Scenes (.tscn) ────────────────────────────────────────────────────────────
 
 def test_tscn_node_tree_containment():

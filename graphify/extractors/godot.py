@@ -525,7 +525,8 @@ def extract_gdscript(path: Path) -> dict:
                     # if that method exists; the singleton reference always lands.
                     autoload_target = autoload_map[receiver_name]
                     add_edge(func_nid, _make_id(_file_stem(autoload_target), method),
-                             "calls", line, context="autoload")
+                             "calls", line, context="autoload",
+                             target_file=os.path.normpath(str(autoload_target)))
                     add_edge(func_nid, _make_id("autoload", receiver_name),
                              "references", line, context="autoload")
                 elif method and method not in _GDSCRIPT_BUILTINS:
