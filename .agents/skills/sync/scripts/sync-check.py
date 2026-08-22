@@ -26,7 +26,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-GODOT_EXTENSIONS = {".gd", ".tscn", ".tres"}
+GODOT_EXTENSIONS = {".gd", ".tscn", ".tres", ".godot"}
 
 failures: list[str] = []
 skipped: list[str] = []
@@ -113,7 +113,7 @@ def check_dispatch(root: Path) -> None:
         "from graphify.extractors.godot import" in source,
         "extract.py imports the Godot extractors",
     )
-    for ext, func in ((".gd", "extract_gdscript"), (".tscn", "extract_godot_scene"), (".tres", "extract_godot_scene")):
+    for ext, func in ((".gd", "extract_gdscript"), (".tscn", "extract_godot_scene"), (".tres", "extract_godot_scene"), (".godot", "extract_godot_project")):
         record(
             re.search(rf'"{re.escape(ext)}": {func},', source) is not None,
             f"_DISPATCH routes {ext}",
