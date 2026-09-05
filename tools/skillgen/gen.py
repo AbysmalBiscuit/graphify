@@ -1063,6 +1063,17 @@ def _is_no_api_key_fix_line(line: str) -> bool:
     return "graphify needs no API key" in line
 
 
+def _is_code_exts_line(line: str) -> bool:
+    """Whether a line is the incremental-update code-only detector's extension set.
+
+    The ``--update`` fast path skips LLM semantic extraction when every changed
+    file is AST-extractable code; the set literal that decides this grows each
+    time a new language lands (Godot ``.gd``/``.tscn``/``.tres``). Both the old
+    (removed) and new (added) set literals match here.
+    """
+    return line.startswith("code_exts = {")
+
+
 def _is_shebang_allowlist_fix_line(line: str) -> bool:
     """Whether a line is part of the Homebrew ``python@`` shebang allowlist fix (#1586).
 
@@ -1158,6 +1169,7 @@ _SANCTIONED_MONOLITH_DIFFS = (
     _is_manifest_stamp_fix_line,
     _is_sensitive_reporting_fix_line,
     _is_no_api_key_fix_line,
+    _is_code_exts_line,
     _is_shebang_allowlist_fix_line,
     _is_obsidian_usage_comment_line,
     _is_uv_from_interpreter_fix_line,

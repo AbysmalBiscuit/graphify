@@ -783,6 +783,19 @@ def _disambiguate_colliding_node_ids(
         if (edge.get("relation") in ("imports", "imports_from")
                 and edge.get("target") in header_remaps):
             edge["target"] = header_remaps[str(edge["target"])]
+            continue
+        # An edge that names the exact file it targets (`target_file`, set by
+        # extractors that resolve cross-file references to a path — e.g. a Godot
+        # .tscn referencing its same-stem .gd script) must follow THAT file's
+        # salt. Keying it by the edge's own source_file instead would repoint it
+        # at the referencing file's variant (a self-loop) or leave it dangling
+        # on the dead unsalted id.
+        target_file_key = (
+            (edge.get("target", ""), _source_key(str(target_file), root))
+            if target_file else None
+        )
+        if target_file_key in remap:
+            edge["target"] = remap[target_file_key]
         elif target_key in remap:
             edge["target"] = remap[target_key]
         elif edge.get("target") in unambiguous_remaps:

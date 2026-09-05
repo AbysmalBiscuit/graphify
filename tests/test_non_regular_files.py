@@ -13,6 +13,7 @@ reason: it is not a regular file.
 import os
 import socket
 import stat
+import sys
 import tempfile
 from pathlib import Path
 
@@ -34,6 +35,7 @@ def test_regular_source_file_is_accepted(tree):
     assert _is_regular_file(tree / "src" / "module.py") is True
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is POSIX-only")
 def test_fifo_is_rejected(tree):
     """The shape that hangs the whole run."""
     fifo = tree / "src" / "pipe.py"
@@ -42,6 +44,10 @@ def test_fifo_is_rejected(tree):
     assert _is_regular_file(fifo) is False
 
 
+@pytest.mark.skipif(
+    not hasattr(socket, "AF_UNIX"),
+    reason="AF_UNIX unavailable on this platform build",
+)
 def test_unix_socket_is_rejected(tree):
     sock_path = tree / "src" / "sock.py"
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -65,6 +71,7 @@ def test_symlink_to_a_regular_file_is_accepted(tree):
     assert _is_regular_file(link) is True
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="os.mkfifo is POSIX-only")
 def test_symlink_pointing_at_a_fifo_is_rejected(tree):
     """A link to a FIFO blocks exactly like the FIFO, so stat must follow it."""
     fifo = tree / "src" / "real.py"

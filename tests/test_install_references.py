@@ -304,7 +304,8 @@ def test_gemini_install_references_all_resolve(tmp_path):
     """
     import re
     _install(tmp_path, "gemini")
-    skill = tmp_path / ".gemini" / "skills" / "graphify" / "SKILL.md"
+    with patch("graphify.__main__.Path.home", return_value=tmp_path):
+        skill = mainmod._platform_skill_destination("gemini", project=False)
     assert skill.exists()
     refdir = skill.parent / "references"
     assert refdir.is_dir()

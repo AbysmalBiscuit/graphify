@@ -7,7 +7,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 import graphify.llm as llm
+
+pytest.importorskip("openai", reason="openai extra not installed")
 
 
 def _capture_client_kwargs(monkeypatch):

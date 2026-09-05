@@ -45,6 +45,7 @@ from graphify.extractors.dm import extract_dm, extract_dmf, extract_dmi, extract
 from graphify.extractors.elixir import extract_elixir  # noqa: F401
 from graphify.extractors.fortran import _cpp_preprocess, extract_fortran  # noqa: F401
 from graphify.extractors.go import _GO_PREDECLARED_FUNCS, extract_go  # noqa: F401
+from graphify.extractors.godot import extract_gdscript, extract_godot_project, extract_godot_scene  # noqa: F401
 from graphify.extractors.json_config import extract_json  # noqa: F401
 from graphify.extractors.commonlisp import extract_commonlisp  # noqa: F401
 from graphify.extractors.markdown import extract_markdown, _MD_LINK_INDEX_CACHE  # noqa: F401
@@ -5503,6 +5504,10 @@ _DISPATCH: dict[str, Any] = {
     ".m": extract_objc,
     ".mm": extract_objc,
     ".jl": extract_julia,
+    ".gd": extract_gdscript,
+    ".tscn": extract_godot_scene,
+    ".tres": extract_godot_scene,
+    ".godot": extract_godot_project,
     ".f": extract_fortran,
     ".F": extract_fortran,
     ".f90": extract_fortran,
