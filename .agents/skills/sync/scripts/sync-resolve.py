@@ -5,7 +5,7 @@ The same three files conflict on every upstream release, always the same way:
 take upstream's version of one construct, then re-apply one fixed Godot
 transform.
 
-    graphify/detect.py  upstream's CODE_EXTENSIONS plus .gd/.tscn/.tres;
+    graphify/detect.py  upstream's CODE_EXTENSIONS plus .gd/.tscn/.tres/.godot;
                         DOC_EXTENSIONS verbatim
     pyproject.toml      upstream's optional-dependency block, plus the godot
                         extra, plus tree-sitter-language-pack in `all`
@@ -36,7 +36,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-GODOT_EXTENSIONS = ("'.gd'", "'.tscn'", "'.tres'")
+GODOT_EXTENSIONS = ("'.gd'", "'.tscn'", "'.tres'", "'.godot'")
 GODOT_PACKAGE = "tree-sitter-language-pack"
 
 CONFLICT = re.compile(
