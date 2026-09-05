@@ -26,7 +26,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-GODOT_EXTENSIONS = {".gd", ".tscn", ".tres", ".godot"}
+from sync_common import GODOT_EXTENSIONS
+
+GODOT_DISPATCH = {
+    ".gd": "extract_gdscript",
+    ".tscn": "extract_godot_scene",
+    ".tres": "extract_godot_scene",
+    ".godot": "extract_godot_project",
+}
 
 failures: list[str] = []
 skipped: list[str] = []
@@ -86,7 +93,7 @@ def check_extensions(root: Path, upstream: str) -> None:
         record(False, "detect.py extension sets parse", "CODE_EXTENSIONS/DOC_EXTENSIONS not found as one-line set literals")
         return
 
-    missing = GODOT_EXTENSIONS - code
+    missing = set(GODOT_EXTENSIONS) - code
     record(not missing, "CODE_EXTENSIONS keeps Godot extensions", f"missing {sorted(missing)}")
 
     ref = git(root, "show", f"{upstream}:graphify/detect.py")
@@ -102,7 +109,7 @@ def check_extensions(root: Path, upstream: str) -> None:
 
     lost = up_code - code
     record(not lost, "CODE_EXTENSIONS keeps every upstream extension", f"dropped {sorted(lost)}")
-    extra = code - up_code - GODOT_EXTENSIONS
+    extra = code - up_code - set(GODOT_EXTENSIONS)
     record(not extra, "CODE_EXTENSIONS adds nothing beyond Godot", f"unexpected {sorted(extra)}")
     record(docs == up_docs, "DOC_EXTENSIONS matches upstream exactly", f"differs by {sorted(docs ^ up_docs)}")
 
@@ -113,7 +120,12 @@ def check_dispatch(root: Path) -> None:
         "from graphify.extractors.godot import" in source,
         "extract.py imports the Godot extractors",
     )
-    for ext, func in ((".gd", "extract_gdscript"), (".tscn", "extract_godot_scene"), (".tres", "extract_godot_scene"), (".godot", "extract_godot_project")):
+    record(
+        set(GODOT_DISPATCH) == set(GODOT_EXTENSIONS),
+        "every Godot extension has a dispatch route",
+        f"unrouted or unknown: {sorted(set(GODOT_DISPATCH) ^ set(GODOT_EXTENSIONS))}",
+    )
+    for ext, func in GODOT_DISPATCH.items():
         record(
             re.search(rf'"{re.escape(ext)}": {func},', source) is not None,
             f"_DISPATCH routes {ext}",

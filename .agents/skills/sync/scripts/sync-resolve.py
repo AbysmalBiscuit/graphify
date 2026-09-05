@@ -5,7 +5,7 @@ The same three files conflict on every upstream release, always the same way:
 take upstream's version of one construct, then re-apply one fixed Godot
 transform.
 
-    graphify/detect.py  upstream's CODE_EXTENSIONS plus .gd/.tscn/.tres/.godot;
+    graphify/detect.py  upstream's CODE_EXTENSIONS plus the Godot extensions;
                         DOC_EXTENSIONS verbatim
     pyproject.toml      upstream's optional-dependency block, plus the godot
                         extra, plus tree-sitter-language-pack in `all`
@@ -36,7 +36,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-GODOT_EXTENSIONS = ("'.gd'", "'.tscn'", "'.tres'", "'.godot'")
+from sync_common import GODOT_EXTENSIONS
+
+_QUOTED_EXTENSIONS = tuple(f"'{ext}'" for ext in GODOT_EXTENSIONS)
 GODOT_PACKAGE = "tree-sitter-language-pack"
 
 CONFLICT = re.compile(
@@ -72,10 +74,10 @@ def resolve_detect(head: str, branch: str) -> str:
     out = []
     for line in head.splitlines(keepends=True):
         if line.startswith("CODE_EXTENSIONS = {"):
-            if all(ext in line for ext in GODOT_EXTENSIONS):
+            if all(ext in line for ext in _QUOTED_EXTENSIONS):
                 out.append(line)
             elif "'.jl', " in line:
-                out.append(line.replace("'.jl', ", "'.jl', " + ", ".join(GODOT_EXTENSIONS) + ", ", 1))
+                out.append(line.replace("'.jl', ", "'.jl', " + ", ".join(_QUOTED_EXTENSIONS) + ", ", 1))
             else:
                 raise Unrecognized("CODE_EXTENSIONS has no '.jl' anchor to insert after")
         elif line.startswith("DOC_EXTENSIONS = {") or not line.strip():

@@ -33,14 +33,14 @@ Everything `feat_lang_godot` deliberately adds. If a conflicted hunk is not in t
 
 | File | Intentional change |
 |---|---|
-| `graphify/detect.py` | `'.gd', '.tscn', '.tres'` in `CODE_EXTENSIONS`, inserted after `'.jl'` |
-| `graphify/extract.py` | `from graphify.extractors.godot import ...`; three `_DISPATCH` entries |
+| `graphify/detect.py` | the Godot extensions in `CODE_EXTENSIONS`, inserted after `'.jl'` |
+| `graphify/extract.py` | `from graphify.extractors.godot import ...`; one `_DISPATCH` entry per Godot extension |
 | `graphify/extractors/godot.py` | entire file (new, never conflicts) |
 | `graphify/extractors/__init__.py` | exports the two Godot extractors |
 | `graphify/extractors/resolution.py` | the `target_file_key` routing block in `_disambiguate_colliding_node_ids` |
 | `pyproject.toml` | `godot = ["tree-sitter-language-pack"]` extra, same entry in `all`, dev dep |
 | `tools/skillgen/gen.py` | `_is_code_exts_line` predicate + its entry in `_SANCTIONED_MONOLITH_DIFFS` |
-| skill `update.md` fragments + frozen monoliths | `.gd`/`.tscn`/`.tres` in the `code_exts` set |
+| skill `update.md` fragments + frozen monoliths | the Godot extensions in the `code_exts` set |
 | `tests/test_godot.py`, `tests/fixtures/godot_project/` | new (never conflict) |
 | `uv.lock` | the `godot` extra block, its `provides-extras` entry, and the `tree-sitter-language-pack` package entries |
 | `CHANGELOG.md` | the Godot entry |
@@ -51,7 +51,11 @@ Note what is **not** on that list: `DOC_EXTENSIONS`, the `graphifyy` version, an
 
 ### `graphify/detect.py`
 
-Take the HEAD literal for both sets verbatim, then insert `'.gd', '.tscn', '.tres', ` into `CODE_EXTENSIONS` immediately after `'.jl', `.
+Take the HEAD literal for both sets verbatim, then insert the Godot extensions into `CODE_EXTENSIONS` immediately after `'.jl', `.
+
+`scripts/sync_common.py` holds the one list those extensions come from. Both
+`sync-resolve.py` and `sync-check.py` read it, so adding a Godot file type is a
+one-line change there and the checker starts demanding it everywhere at once.
 
 `DOC_EXTENSIONS` conflicts only because upstream keeps adding to it (`.skill` landed in 0.9.x). The branch never touched it — take HEAD unchanged. Taking the Godot side here silently drops upstream extensions from detection, and no test catches it.
 
