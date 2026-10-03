@@ -57,6 +57,7 @@ def test_skill_roundtrip_at_real_destination(platform, project, tmp_path, monkey
     home.mkdir()
     project_dir.mkdir()
     monkeypatch.chdir(project_dir)
+    monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
 
     with patch("graphify.__main__.Path.home", return_value=home):
         dst = mainmod._platform_skill_destination(

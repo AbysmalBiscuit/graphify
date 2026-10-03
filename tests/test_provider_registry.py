@@ -138,10 +138,32 @@ def test_provider_base_url_ok_scheme_and_warnings(capsys):
     assert "plaintext" in capsys.readouterr().err
 
 
+def _delenv_backend_selectors(monkeypatch):
+    """Clear every environment variable detect_backend() selects on.
+
+    A custom provider in the developer's own ~/.graphify/providers.json is
+    merged into BACKENDS when graphify.llm is imported, which happens before the
+    sandbox-home fixture can redirect Path.home(). Naming one provider here
+    would only fix the machine it was written on.
+
+    Bedrock, Azure and Ollama are chosen without an API key, so their selectors
+    are not reachable through _backend_env_keys and are listed explicitly.
+    """
+    from graphify import llm
+
+    for name in llm.BACKENDS:
+        for env_key in llm._backend_env_keys(name):
+            monkeypatch.delenv(env_key, raising=False)
+    for env_key in ("AWS_PROFILE", "AWS_REGION", "AWS_DEFAULT_REGION",
+                    "AZURE_OPENAI_ENDPOINT", "OLLAMA_HOST", "OLLAMA_BASE_URL"):
+        monkeypatch.delenv(env_key, raising=False)
+
+
 def test_detect_backend_custom_provider_after_builtins(monkeypatch):
     """Custom providers appear after all built-ins in detect_backend() priority."""
     from graphify import llm
 
+    _delenv_backend_selectors(monkeypatch)
     monkeypatch.setattr(llm, "BACKENDS", {
         **llm.BACKENDS,
         "myprovider": {
