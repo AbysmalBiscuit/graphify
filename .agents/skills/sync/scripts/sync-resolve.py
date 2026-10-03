@@ -9,8 +9,8 @@ transform.
                         DOC_EXTENSIONS verbatim
     pyproject.toml      upstream's optional-dependency block, plus the godot
                         extra, plus tree-sitter-language-pack in `all`
-    uv.lock             upstream's line with "godot" inserted into
-                        provides-extras; the version line verbatim
+    uv.lock             upstream's lines throughout, with the godot extra
+                        and its requires-dist route added back
 
 Nothing here reads the upstream ref. Each conflict region already carries
 upstream's text as its HEAD side, so the transforms work off the markers git
@@ -154,13 +154,17 @@ def resolve_pyproject(head: str, branch: str) -> str:
 # --- uv.lock ----------------------------------------------------------------
 
 
-def resolve_lock(head: str, branch: str) -> str:
-    """Upstream's line, with "godot" put back into provides-extras.
+_LOCK_ENTRY = re.compile(r'^\s*\{ name = "[^"]+".* \},$')
+_LOCK_EXTRA = re.compile(r"extra == '([^']+)'")
 
-    The version line is upstream's verbatim: upstream ships pyproject.toml and
-    uv.lock out of step on purpose, so matching pyproject here diverges from
-    upstream and re-conflicts next release.
-    """
+
+def _extra_of(line: str) -> str:
+    match = _LOCK_EXTRA.search(line)
+    return match.group(1) if match else ""
+
+
+def _provides_extras(head: str) -> str:
+    """Upstream's line, with "godot" put back before "all"."""
     out = []
     for line in head.splitlines(keepends=True):
         if line.startswith("provides-extras = ["):
@@ -175,6 +179,52 @@ def resolve_lock(head: str, branch: str) -> str:
         else:
             raise Unrecognized(f"unexpected line in uv.lock conflict: {line.strip()[:60]}")
     return "".join(out)
+
+
+def _requires_dist(head: str, branch: str) -> str:
+    """Upstream's entries for the grammar package, plus the godot route.
+
+    Upstream repins the package for extras of its own, so its entries carry a
+    specifier the fork's unpinned extra must not copy. Only the marker is the
+    fork's to re-add, and uv keeps the run sorted by extra name.
+    """
+    if "extra == 'godot'" not in branch:
+        raise Unrecognized("requires-dist conflict with no godot route to re-add")
+
+    lines = head.splitlines(keepends=True)
+    hits = [i for i, line in enumerate(lines) if GODOT_PACKAGE in line]
+    if not hits:
+        raise Unrecognized(f"{GODOT_PACKAGE} is absent from a requires-dist conflict")
+    first, last = hits[0], hits[-1]
+    if last - first + 1 != len(hits):
+        raise Unrecognized(f"{GODOT_PACKAGE} entries are not contiguous")
+    if any("extra == 'godot'" in lines[i] for i in hits):
+        return head
+
+    model = lines[first]
+    indent = model[: len(model) - len(model.lstrip())]
+    nl = "\r\n" if model.endswith("\r\n") else "\n"
+    route = f"{indent}{{ name = \"{GODOT_PACKAGE}\", marker = \"extra == 'godot'\" }},{nl}"
+    run = sorted(lines[first : last + 1] + [route], key=_extra_of)
+    return "".join(lines[:first] + run + lines[last + 1 :])
+
+
+def resolve_lock(head: str, branch: str) -> str:
+    """Upstream's side, with the godot extra and its route put back."""
+    lines = [line for line in head.splitlines(keepends=True) if line.strip()]
+    if not lines:
+        raise Unrecognized("empty uv.lock conflict region")
+    if any(line.startswith("provides-extras = [") for line in lines):
+        return _provides_extras(head)
+    if all(_LOCK_ENTRY.match(line) for line in lines):
+        return _requires_dist(head, branch)
+    # A lock resolves one version per package, so upstream's pin of the grammar
+    # package is the only one that can stand and its whole block carries.
+    if any(line.startswith("source = { registry") for line in lines):
+        return head
+    if all(line.startswith("version = ") for line in lines):
+        return head
+    raise Unrecognized(f"unexpected line in uv.lock conflict: {lines[0].strip()[:60]}")
 
 
 RESOLVERS = {
