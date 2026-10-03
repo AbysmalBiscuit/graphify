@@ -141,7 +141,7 @@ dev = [
     "tree-sitter-hcl>=1.2.0",
     "tree-sitter-ocaml>=0.25.0",
     "tree-sitter-commonlisp>=0.4.1",
-    "tree-sitter-language-pack>=1.0",
+    "tree-sitter-language-pack",
 ]
 
 [tool.uv]
