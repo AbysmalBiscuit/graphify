@@ -49,7 +49,7 @@ rather than repeating the experiment.
 | `PUSHED` | Done. Report the integration tip and that both branches went up, in one line. Stop. |
 | `UP-TO-DATE` | Done, nothing to sync. Say so in one line. Stop. |
 | `CONFLICT` | The real work — see below. |
-| `CHECK-FAILED` | The merge kept a stale hunk or dropped an intentional one. Read the named check in `.agents/skills/sync/references/sync-conflicts.md`, fix it in the integration worktree, commit the fix into the merge (`git commit --amend` if the merge commit is still the tip), re-run the script. |
+| `CHECK-FAILED` | The merge kept a stale hunk or dropped an intentional one, or the check itself has gone stale against upstream. Read the named check in `.agents/skills/sync/references/sync-conflicts.md`. Commit a content fix on `feat_lang_godot` and save a toolchain fix with `scripts/tooling.sh save`, then re-run the script. A fix that lands only in the merge is discarded the next time the merge is rebuilt. |
 | `TESTS-FAILED` | Only the *new* failures matter; the script already subtracted the known pre-existing set. Debug them as real breakage, then re-run. Do not extend the known-failures list without proving a failure at the upstream tip first, using the worktree recipe the script printed. |
 | `DIRTY` | Uncommitted changes predate the command. Report what's uncommitted and in which worktree, ask whether to commit, stash, or drop. Don't decide for them. |
 | `IN-PROGRESS` | A merge or cherry-pick was already running. Report the state and ask how to proceed. |
