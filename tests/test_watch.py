@@ -1198,8 +1198,8 @@ def test_rebuild_code_deleted_cwd_without_repo_root_returns_false(tmp_path, monk
     monkeypatch.delenv("GRAPHIFY_REPO_ROOT", raising=False)
 
     os.chdir(gone)
-    gone.rmdir()
     try:
+        gone.rmdir()
         assert _rebuild_code(Path("."), changed_paths=[Path("lib.py")]) is False
     finally:
         os.chdir(old_cwd)
@@ -1222,8 +1222,8 @@ def test_rebuild_code_deleted_cwd_uses_graphify_repo_root(tmp_path, monkeypatch)
     monkeypatch.setenv("GRAPHIFY_REPO_ROOT", str(corpus))
 
     os.chdir(gone)
-    gone.rmdir()
     try:
+        gone.rmdir()
         assert _rebuild_code(
             Path("."),
             changed_paths=[Path("lib.py")],
